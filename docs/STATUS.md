@@ -10,11 +10,11 @@ here, not a chat message.
 |------|-------|-------|
 | `MN-0` Spike and decisions | in progress | Bridge path verified 2026-10-04; Prosody HTTP on the in-cluster address verified 2026-10-05. Captions, Element embedding, 320 px still open. |
 | `MN-1` Core prerequisites | not started | Dev MVP runs on 5.1.3 without them (see 2026-10-05). New item: plugin_data lookups must normalize keys like the writes do. |
-| `MN-2` Plugin skeleton | **dev MVP** | Plugin `synascriber` 0.1.0: settings, admin status, personal page, five locales. |
+| `MN-2` Plugin skeleton | **dev MVP** | Plugin `synascriber` 0.2.0: settings (incl. share with participants), admin status, personal page (started and received), five locales. |
 | `MN-3` Sessions | **dev MVP** | State machine with watchdog, segments, roster from Prosody. Tests still missing. |
-| `MN-4` Prosody module | **dev MVP** | `mod_synascriber`: start/stop/state/health, client starts refused. No busted specs yet. |
+| `MN-4` Prosody module | **dev MVP** | `mod_synascriber` 0.2.0: start/stop/state/health, client starts refused, attendees (Keycloak `sub` + email from the Jitsi token) for everyone present while notes are on. No busted specs yet. |
 | `MN-5` Transcriber plugin mode | **dev MVP** | `notes=<ref>` binding, windows to the plugin, 21/21 node tests. Fixed 8 s windows (no VAD yet). |
-| `MN-6` Transcript file | **dev MVP** | Markdown in Files › folder, vectorized, speaker names and times. |
+| `MN-6` Transcript file | **dev MVP** | One Markdown copy per signed-in participant in their Sources › Generated (source `generated`, kind `document`, chosen folder), vectorized; speakers, participants, times. |
 | `MN-7` Jitsi surface | **dev MVP** | Floating button, dialog, banner, outcome with file link; Keycloak PKCE silent sign-in. |
 | `MN-8` Engine and quality | in progress | German Whisper on our GPU host; `synaplan-stt` image + `stt` chart in synaplan-charts#51. |
 | `MN-9` v1.0 release | not started | |
@@ -27,6 +27,7 @@ here, not a chat message.
 | Date | Decision |
 |------|----------|
 | 2026-10-04 | Plan written. D1–D12 proposed in [`README.md`](./README.md) §4, waiting for the product owner. |
+| 2026-10-05 | Product owner: transcripts land for **all participants** in their Generated overview; pushing to OpenCloud / Nextcloud comes from there in a later release. D6 and D12 rewritten accordingly. |
 
 ## Log
 

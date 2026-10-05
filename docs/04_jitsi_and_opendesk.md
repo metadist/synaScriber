@@ -71,7 +71,7 @@ locales). Served by the plugin at
 | on | Red dot + "Notes on · 12:31" (elapsed), always visible, even when the toolbox hides. | Opens the banner details with **Stop** (starter, moderators). |
 | paused | Amber dot + "Notes paused". | Details with the reason. |
 | stopping | Spinner "Saving…". | — |
-| saved (starter only) | Toast for 15 s (§2.4), then idle. | — |
+| saved (starter and every signed-in participant, each with their own link) | Toast for 15 s (§2.4), then idle. | — |
 
 Position and toolbox sync are decided in `MN-0` against `stable-11031`
 (the toolbox, filmstrip and openDesk bar must not be covered at 1280 px,
@@ -137,12 +137,17 @@ Synaplan call:
 Participants without the loader (Jitsi mobile apps, other clients) see
 Jitsi's own transcription indicator and the chat lines from §4.
 
-### 2.4 After Stop (starter)
+### 2.4 After Stop (starter and participants)
 
-Toast: "Saved to Files › Meetings › 2026-10-04 1002 standup.md" with
-**Open** (`https://synaplan.<domain>/files?…` deep link to the file; exact
-route decided in `MN-7`, must select the folder and highlight the file).
-Variants per final state in §3.
+Every signed-in participant gets their own copy in **Sources › Generated**
+(folder from the dialog). The starter's notice: "Notes saved in Synaplan
+Sources › Generated (Meetings) for everyone who was signed in: 3 people."
+Every other participant whose loader is still open: "The meeting notes Anna
+started are in your Synaplan Sources › Generated (Meetings)." Both carry
+**Open the notes** (`https://synaplan.<domain>/files?file=<own copy>`). If a
+copy could not be written, the starter's notice says how many people did not
+get one. Variants per final state in §3. People who left early find their
+copy in Sources › Generated and on Plugins › Meeting notes.
 
 ## 3. Copy (en / de)
 
@@ -164,7 +169,8 @@ no product-internal words.
 | `jitsi.dialog.newFolder` | New folder… | Neuer Ordner… |
 | `jitsi.dialog.start` | Start meeting notes | Mitschrift starten |
 | `jitsi.dialog.cancel` | Cancel | Abbrechen |
-| `jitsi.dialog.signedIn` | Signed in as {name} · Notes are saved in your Files | Angemeldet als {name} · Die Mitschrift wird in Ihren Dateien gespeichert |
+| `jitsi.dialog.consent` | Everyone in this meeting will see that notes are on, and everyone signed in gets them in Synaplan Sources › Generated. Speech becomes text on your organisation's servers; audio is not kept. | Alle in dieser Besprechung sehen, dass mitgeschrieben wird, und alle Angemeldeten erhalten die Mitschrift in Synaplan Quellen › Erzeugt. Sprache wird auf den Servern Ihrer Organisation zu Text; Audio wird nicht gespeichert. |
+| `jitsi.dialog.consentOwn` (sharing off) | … only you get them in Synaplan Sources › Generated. … | … nur Sie erhalten die Mitschrift in Synaplan Quellen › Erzeugt. … |
 | `jitsi.dialog.signIn` | Sign in to continue. | Melden Sie sich an, um fortzufahren. |
 | `jitsi.reason.guest` | Guests cannot start meeting notes. | Gäste können keine Mitschrift starten. |
 | `jitsi.reason.e2ee` | Meeting notes don't work in end-to-end encrypted meetings. | In Ende-zu-Ende-verschlüsselten Besprechungen ist keine Mitschrift möglich. |
@@ -177,10 +183,13 @@ no product-internal words.
 | `jitsi.banner.starting` | Meeting notes are starting… | Mitschrift wird gestartet… |
 | `jitsi.banner.paused` | Meeting notes are paused: speech recognition is not available. The meeting continues. | Mitschrift pausiert: Die Spracherkennung ist nicht verfügbar. Die Besprechung läuft weiter. |
 | `jitsi.banner.stop` | Stop | Beenden |
-| `jitsi.toast.saved` | Saved to Files › {folder} › {file} | Gespeichert in Dateien › {folder} › {file} |
-| `jitsi.toast.savedGaps` | Saved to Files › {folder} › {file}. Some parts are missing; the file says where. | Gespeichert in Dateien › {folder} › {file}. Einige Abschnitte fehlen; die Datei nennt die Zeiten. |
+| `jitsi.toast.saved` | Notes saved in Synaplan Sources › Generated ({folder}). | Mitschrift gespeichert in Synaplan Quellen › Erzeugt ({folder}). |
+| `jitsi.toast.savedAll` | Notes saved in Synaplan Sources › Generated ({folder}) for everyone who was signed in: {count} people. | Mitschrift gespeichert in Synaplan Quellen › Erzeugt ({folder}) für alle Angemeldeten: {count} Personen. |
+| `jitsi.toast.savedPartial` | {count} participants did not get a copy. Ask your administrator. | {count} Teilnehmende haben keine Kopie erhalten. Wenden Sie sich an die Administration. |
+| `jitsi.toast.received` | The meeting notes {name} started are in your Synaplan Sources › Generated ({folder}). | Die von {name} gestartete Mitschrift liegt in Ihren Synaplan Quellen › Erzeugt ({folder}). |
+| `jitsi.toast.savedGaps` | Notes saved in Synaplan Sources › Generated ({folder}). Some parts are missing; the file says where. | Mitschrift gespeichert in Synaplan Quellen › Erzeugt ({folder}). Einige Abschnitte fehlen; die Datei nennt die Zeiten. |
 | `jitsi.toast.nothing` | Meeting notes stopped. No speech was recognised, so no file was saved. | Mitschrift beendet. Es wurde keine Sprache erkannt, daher wurde keine Datei gespeichert. |
-| `jitsi.toast.failed` | Your notes could not be saved to Files. They are kept in Synaplan for 7 days. Open Meeting notes to save them again. | Ihre Mitschrift konnte nicht in Dateien gespeichert werden. Sie bleibt 7 Tage in Synaplan. Öffnen Sie „Mitschrift“, um sie erneut zu speichern. |
+| `jitsi.toast.failed` | Your notes could not be saved to Sources. They are kept in Synaplan for 7 days. Open Meeting notes to save them again. | Ihre Mitschrift konnte nicht in Quellen gespeichert werden. Sie bleibt 7 Tage in Synaplan. Öffnen Sie „Mitschrift“, um sie erneut zu speichern. |
 | `jitsi.toast.open` | Open | Öffnen |
 | `jitsi.chat.started` | Meeting notes are on, started by {name}. Speech in this meeting is written down; audio is not kept. A moderator can stop it at any time. | Die Mitschrift läuft, gestartet von {name}. Was hier gesagt wird, wird mitgeschrieben; Audio wird nicht gespeichert. Moderierende können sie jederzeit beenden. |
 | `jitsi.chat.stopped` | Meeting notes stopped by {name}. | Mitschrift beendet von {name}. |
