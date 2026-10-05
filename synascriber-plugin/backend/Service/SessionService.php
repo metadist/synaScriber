@@ -286,7 +286,7 @@ final readonly class SessionService
             'mine' => $mine,
             'received' => !$mine && isset($files[$viewerId]),
             'canStop' => null !== $viewer && $this->canStop($session, $viewer) && in_array($session['state'], self::ACTIVE, true),
-            'fileId' => $files[$viewerId] ?? null,
+            'fileId' => $files[$viewerId] ?? ($mine ? ($session['fileId'] ?? null) : null),
             'fileName' => $session['fileName'] ?? null,
             'recipients' => count($files),
             'notDelivered' => $mine ? (int) ($session['deliveryFailures'] ?? 0) : 0,

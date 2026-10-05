@@ -31,6 +31,46 @@ here, not a chat message.
 
 ## Log
 
+**2026-10-05 — Transcripts for every participant (plugin 0.2.0, Prosody
+module 0.2.0).** Product owner: the transcript lands for all participants
+in their Generated overview; pushing to OpenCloud / Nextcloud comes from
+there later. What changed:
+
+- Prosody remembers everyone in the room while notes are on (also people
+  who join late or leave early), with the identity from their Jitsi token:
+  Keycloak `sub`, email, display name. Guests have none and get no copy.
+- At the end the plugin writes one copy per recipient: the starter plus
+  every attendee matched to a Synaplan account (email + `sub` check;
+  existing accounts are only looked up, never updated). Someone who never
+  opened Synaplan gets their account created through Synaplan's own
+  first-sign-in path (`OidcUserService::findOrCreateFromClaims`).
+- Each copy: source `generated`, kind `document`, the chosen folder,
+  `sourceId synascriber-<ref>`, vectorized, so it lists in
+  **Sources › Generated** and Synaplan's push menu can send it to a cloud
+  folder. The header gains a participants line (everyone present, also
+  those who never spoke).
+- Copy uses Synaplan's real labels: the page is **Sources** (Quellen,
+  Fuentes, Sources, Kaynaklar), not "Files". The dialog says who gets the
+  notes; the starter's notice says how many people got a copy and how many
+  did not; every other participant gets "The meeting notes {name} started
+  are in your Synaplan Sources › Generated" with a link to their own copy.
+- Admin switch **share with participants** (default on; off = only the
+  starter). Personal page lists notes you started or received.
+
+Walked on the dev cluster with `tests/e2e/meeting-notes.mjs` (now also
+signs both people in to Synaplan and checks Sources › Generated in the list
+and through the files API):
+
+| Run | People | Result |
+|-----|--------|--------|
+| 1, 2 | demo1 starts, demo2 | Both notices, own links (files 4–7), both copies in Generated, 76 s each |
+| 3 | demo1 starts, demo3 (new directory user) | demo3's account came from the loader's first Synaplan call; copy in Generated |
+| 4 | demo1 starts, demo4 (new, loader blocked like the mobile app) | Plugin created demo4's account at save time (user 5); demo4's first Synaplan sign-in matched it, no duplicate; copy waiting in Generated |
+
+`demo3` / `demo4` are test directory users created with
+`keycloak-nubus-setup.py --ensure-user` (passwords in the private
+credentials file, never in git).
+
 **2026-10-04 — Research.** Read `origin/main` `b0390620c` (plugin host,
 auth, speech-to-text, files, [synaplan#2252](https://github.com/metadist/synaplan/pull/2252)), `synaplan-charts` `origin/main`,
 Synaform 4.4.3, the openDesk edition used on the dev cluster, Jitsi's

@@ -11,6 +11,9 @@
 //   PLAYWRIGHT=/path/to/node_modules/playwright/index.mjs node tests/e2e/meeting-notes.mjs
 //
 // Audio: 48 kHz, 16-bit, mono WAV (Chrome's fake microphone loops it).
+// SYN_B_NO_LOADER=1: the second person's meeting page never loads the button
+// (like the Jitsi mobile app), so they reach Synaplan for the first time only
+// after the meeting; their copy must be waiting in Sources › Generated.
 const need = (name) => {
   const value = process.env[name]
   if (!value) {
@@ -23,6 +26,7 @@ const { chromium } = await import(process.env.PLAYWRIGHT || 'playwright')
 const MEET = need('SYN_MEET').replace(/\/$/, '')
 const ACCOUNT = need('SYN_ACCOUNT')
 const SYNAPLAN = (process.env.SYN_SYNAPLAN || '').replace(/\/$/, '')
+const B_NO_LOADER = process.env.SYN_B_NO_LOADER === '1'
 const SECONDS = Number(process.env.SYN_SECONDS || 70)
 const OUT = process.env.SYN_OUT || '/tmp/synascriber-e2e'
 const ROOM = process.env.SYN_ROOM || `synascriber-e2e-${Date.now().toString(36)}`
@@ -43,7 +47,7 @@ const L = LABELS[process.env.SYN_UI || 'en']
 const t0 = Date.now()
 const log = (...args) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1).padStart(6)}s]`, ...args)
 
-async function participant(label, user, password, audio) {
+async function participant(label, user, password, audio, { noLoader = false } = {}) {
   const browser = await chromium.launch({
     headless: true,
     args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-audio-capture=${audio}`, '--autoplay-policy=no-user-gesture-required'],
@@ -63,6 +67,9 @@ async function participant(label, user, password, audio) {
   await page.click('#kc-login')
   await page.waitForURL(/\/account/, { timeout: 30000 })
 
+  if (noLoader) {
+    await page.route(/\/plugins\/synascriber\//, (route) => route.abort())
+  }
   await page.goto(`${MEET}/${ROOM}#config.startWithVideoMuted=true`)
   const deadline = Date.now() + 90000
   for (;;) {
@@ -148,7 +155,7 @@ await notes(a.page).getByRole('button', { name: L.button, exact: true }).waitFor
 log('A', 'floating button visible')
 await a.page.screenshot({ path: `${OUT}/1-button.png` })
 
-const b = await participant('B', need('SYN_USER2'), need('SYN_PASS2'), need('SYN_AUDIO2'))
+const b = await participant('B', need('SYN_USER2'), need('SYN_PASS2'), need('SYN_AUDIO2'), { noLoader: B_NO_LOADER })
 
 await notes(a.page).getByRole('button', { name: L.button, exact: true }).click()
 await notes(a.page).getByRole('dialog').waitFor()
@@ -160,9 +167,11 @@ log('A', 'start clicked (meeting language: Deutsch)')
 await waitForText(a.page, L.running, 45000, 'running-for-starter')
 log('A', 'notes running')
 await a.page.screenshot({ path: `${OUT}/3-running-starter.png` })
-await waitForText(b.page, L.banner, 45000, 'banner-for-participant')
-log('B', 'sees the banner')
-await b.page.screenshot({ path: `${OUT}/4-banner-participant.png` })
+if (!B_NO_LOADER) {
+  await waitForText(b.page, L.banner, 45000, 'banner-for-participant')
+  log('B', 'sees the banner')
+  await b.page.screenshot({ path: `${OUT}/4-banner-participant.png` })
+}
 
 const jitsiSays = await b.page.evaluate(() => APP.store.getState()['features/transcribing']?.isTranscribing ?? null)
 log('B', `Jitsi's own indicator: isTranscribing=${jitsiSays}`)
@@ -177,12 +186,15 @@ const link = await notes(a.page).getByRole('link', { name: L.open }).getAttribut
 log('A', `saved for everyone; link ${link}`)
 await a.page.screenshot({ path: `${OUT}/5-saved.png` })
 
-await waitForText(b.page, L.received, 60000, 'received-notice')
-const linkB = await notes(b.page).getByRole('link', { name: L.open }).getAttribute('href')
-log('B', `received; link ${linkB}`)
-await b.page.screenshot({ path: `${OUT}/6-received.png` })
-if (!linkB || linkB === link) {
-  throw new Error(`B should get a link to their own copy, got ${linkB}`)
+let linkB = null
+if (!B_NO_LOADER) {
+  await waitForText(b.page, L.received, 60000, 'received-notice')
+  linkB = await notes(b.page).getByRole('link', { name: L.open }).getAttribute('href')
+  log('B', `received; link ${linkB}`)
+  await b.page.screenshot({ path: `${OUT}/6-received.png` })
+  if (!linkB || linkB === link) {
+    throw new Error(`B should get a link to their own copy, got ${linkB}`)
+  }
 }
 
 const generated = {}
