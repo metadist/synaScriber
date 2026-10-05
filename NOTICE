@@ -1,0 +1,12 @@
+synaScriber
+Copyright 2026 metadist data management GmbH
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Developed with friendly support by IABG (https://www.iabg.de).
+
+synaScriber is a plugin for Synaplan (https://github.com/metadist/synaplan).
+The default speech model used with it, primeline/whisper-large-v3-turbo-german
+(Apache-2.0), is a fine-tune of OpenAI Whisper (MIT); it is served by
+whisper.cpp (MIT) from the synaplan-stt image in
+https://github.com/metadist/synaplan-charts.

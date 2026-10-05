@@ -1,0 +1,17 @@
+# Private: access details, servers, detailed planning, deploy secrets.
+/.local/
+
+# Dependencies and builds
+node_modules/
+vendor/
+dist/
+build/
+coverage/
+
+# Local environment
+.env
+.env.*
+*.log
+.DS_Store
+.idea/
+.vscode/
