@@ -26,8 +26,8 @@ Synaplan becomes the meeting-notes brain of an openDesk installation:
 
 | Person | Today | With meeting notes |
 |--------|-------|--------------------|
-| Team lead in a public-administration openDesk | Writes minutes by hand during the call, or not at all. | Clicks **Meeting notes**, talks, finds the transcript in Files › Meetings, asks Synaplan for the action items. |
-| Participant | Does not know whether anyone writes down what they say. | Sees "Meeting notes are on · started by Anna" for the whole meeting and in the chat. |
+| Team lead in a public-administration openDesk | Writes minutes by hand during the call, or not at all. | Clicks **Meeting notes**, talks, finds the transcript in Sources › Generated, asks Synaplan for the action items. |
+| Participant | Does not know whether anyone writes down what they say, and never gets the minutes. | Sees "Meeting notes are on · started by Anna" for the whole meeting, and afterwards has their own copy in Sources › Generated. |
 | openDesk admin | Has no sovereign transcription. Jitsi's own option needs a cloud speech API. | Points Jitsi at Synaplan. Audio stays on the organisation's servers. |
 
 ## 3. Scope per version
@@ -115,9 +115,12 @@ stays the fallback idea for E2EE meetings (later). C and D are not pursued.
    `session-end` → transcriber flushes the last windows and reports
    `session-end` → plugin renders the Markdown file into Anna's folder,
    marks the session **saved**, Prosody posts "Meeting notes stopped".
-10. The loader shows "Saved to Files › Meetings ›
-    2026-10-04 1002 standup.md" with **Open**. Anna finds it in Files in ten
-    seconds; it carries "From Jitsi meeting *standup* on 4 Oct 2026, 10:02".
+10. Every signed-in participant gets their own copy in Sources › Generated
+    (folder Meetings). Anna's loader says "Notes saved … for everyone who was
+    signed in: 3 people" with **Open**; the others' loaders say "The meeting
+    notes Anna started are in your Synaplan Sources › Generated" with a link
+    to their own copy. The header lists who started, the time, speakers and
+    everyone who was present.
 
 Failure paths (transcriber down, speech model down, Synaplan down, everyone
 leaves, Jitsi stop) are in [02 §7](./02_architecture.md#7-failure-handling).
@@ -156,8 +159,8 @@ health so there is one place to look.
 | # | Bar ([Synaplan AGENTS.md](https://github.com/metadist/synaplan/blob/main/AGENTS.md)) | How this plan meets it |
 |---|-----------------|------------------------|
 | 1 | First run without help | Admin: plugin page with four status lines, each "ok" or one sentence + fix; "Connect openDesk" emits copy-paste snippets. Person: the button explains itself; the dialog has two choices and one primary button. Plugin off ⇒ no button, no teaser (loader exits after one config call). |
-| 2 | Ten-second findability | The transcript is a normal file in the chosen Files folder with a provenance line and the source label "From a meeting"; the stop toast links to it; the personal **Meeting notes** page (Plugins group) lists every session with its file. Named path: Files › *folder* › file, or Plugins › Meeting notes. |
-| 3 | Five questions on the open surface | Banner in Jitsi and the session row answer: owner ("started by Anna"), who else (everyone in this meeting is transcribed; the file is only Anna's until she shares it), what it touches ("one file in Files › Meetings"), stop ("Stop"), where from ("Jitsi meeting standup, 4 Oct, 10:02"). |
+| 2 | Ten-second findability | Every signed-in participant has the transcript in **Sources › Generated** (kind Documents), in the chosen folder; the stop notice links each person to their own copy; the personal **Meeting notes** page (Plugins group) lists every session they started or received. Named path: Sources › Generated, or Plugins › Meeting notes. |
+| 3 | Five questions on the open surface | Banner in Jitsi and the session row answer: owner ("started by Anna"), who else (everyone in this meeting is transcribed, and everyone signed in gets a copy — the dialog says so before Start), what it touches ("one file per participant in Sources › Generated"), stop ("Stop"), where from ("Jitsi meeting standup, 4 Oct, 10:02"). |
 | 4 | Honest outcome copy | Every session ends in **saved**, **saved with gaps**, **nothing to save** or **failed**, each with one sentence that says what was and was not written ([04 §3](./04_jitsi_and_opendesk.md#3-copy-en--de)). |
 | 5 | Undo is a click | **Stop** in the banner; Jitsi's own stop for moderators; **Stop** on the session row in Synaplan; admin **Stop all**; deleting the file deletes the transcript. Consequence copy per action. |
 | 6 | Stability is UX | Server-side audio path; watchdog finalizes sessions with no activity; no `setTimeout` race fixes; journeys walked in the browser with synthetic voices ([06 §5](./06_dev_environment.md#5-synthetic-meetings)). |
@@ -172,7 +175,7 @@ Named here before any UI exists (U1). The five sprint-file exit bullets
 |----|---------|
 | **J-MN-1 Admin turns it on** | Admin opens Plugins › Meeting notes. Four status lines: *Jitsi connection*, *Transcriber*, *Speech model*, *Sign-in for the button*. Each is green or says what is missing in one sentence with the fix. **Connect openDesk** shows the snippets with copy buttons. After pasting and reloading Jitsi, the status is green and a new meeting shows the button. |
 | **J-MN-2 Start, talk, find** | demo1 joins a meeting, clicks **Meeting notes**, keeps *Deutsch* and *Meetings*, presses **Start meeting notes**. Within five seconds everyone sees the banner and a chat line. Two people talk for two minutes; captions appear with names. demo1 presses **Stop**. Within 30 s the toast says where the file is; **Open** shows it in Synaplan Files; the first line says where it came from; demo1 shares it with a group. |
-| **J-MN-3 The other participant** | demo2 joins while notes are on: the banner says "Meeting notes are on · started by Demo One · since 10:02". demo2 has no Start (one session per meeting). demo2's lines appear as "Demo Two" in the file. A guest sees the banner and the chat line, never a Start. |
+| **J-MN-3 The other participant** | demo2 joins while notes are on: the banner says "Meeting notes are on · started by Demo One · since 10:02". demo2 has no Start (one session per meeting). demo2's lines appear as "Demo Two" in the file. After Stop demo2 gets "The meeting notes Demo One started are in your Synaplan Sources › Generated" and finds their own copy there. A guest sees the banner and the chat line, never a Start. |
 | **J-MN-4 Something is down** | (a) Transcriber not running: Start ends in "Meeting notes could not start. Nothing is being written down. Try again in a minute or ask your administrator." and nothing else changes. (b) Speech model fails mid-meeting: banner says notes are paused; the meeting continues; the file marks the gap with times. (c) Synaplan unreachable at Stop: Jitsi's own stop still works; the session is saved by the watchdog when Synaplan is back, with a line saying where it stopped. |
 | **J-MN-5 Every way to stop** | Stop from the banner; stop by a moderator in Jitsi's menu; last person leaves; plugin switched off by the admin. Each ends with exactly one file (or "nothing to save") and the session row is never left "running". |
 | **J-MN-6 Plugin off** | Admin switches the plugin off: running sessions stop with "Meeting notes were turned off by your administrator. The notes so far are saved." New page loads show no button; the loader makes one config call and nothing else. |

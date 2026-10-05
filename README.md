@@ -66,10 +66,26 @@ Jitsi web loader   ◀─ button, dialog, banner (Keycloak) ─▶  Synaplan + s
 | v1.2 | Save the transcript into the person's OpenCloud as well. |
 | Later | Element chat and calls, summaries with decisions and action items, translation. |
 
-Planning and the feasibility spike are done; the transcription path was
-verified on openDesk's Jitsi. Code follows the steps in
-[docs/07_sprints.md](docs/07_sprints.md). Start reading at
+**Now:** a development MVP runs on our openDesk dev cluster and passes the
+two-person journey end to end (button, start, banner, stop, transcript in
+Synaplan Files) — see [docs/STATUS.md](docs/STATUS.md). The remaining steps
+to v1.0 are in [docs/07_sprints.md](docs/07_sprints.md). Start reading at
 [docs/README.md](docs/README.md).
+
+## What is in this repository
+
+| Path | What |
+|------|------|
+| [`synascriber-plugin/`](synascriber-plugin/) | The Synaplan plugin (`manifest.json`, PHP backend, plugin page, Jitsi loader, migration). Mount or copy it to `/plugins/synascriber` and run `app:plugin:install`. |
+| [`prosody/mod_synascriber.lua`](prosody/mod_synascriber.lua) | Prosody module on Jitsi's main VirtualHost: lets Synaplan switch bridge transcription on and off per room; clients cannot start it. |
+| [`jitsi/static/`](jitsi/static/) | The silent sign-in page served by Jitsi web. |
+| [`deploy/keycloak/ensure-client.py`](deploy/keycloak/ensure-client.py) | Creates the Keycloak public client the loader signs in with. |
+| [`tests/e2e/meeting-notes.mjs`](tests/e2e/meeting-notes.mjs) | Playwright journey against a real openDesk: two people, speech audio, start, banner, stop, saved file. |
+| [`docs/`](docs/) | Plan, research, architecture, steps, status. |
+
+The transcriber that receives the audio from Jitsi's bridge is the
+`synaplan-transcriber` sidecar in the [Synaplan repository](https://github.com/metadist/synaplan)
+(plugin mode).
 
 ## Repositories
 
@@ -92,7 +108,8 @@ verified on openDesk's Jitsi. Code follows the steps in
 
 ## Requirements (v1.0)
 
-- Synaplan 5.2.0 or later (plugin routes, Whisper server mode)
+- Synaplan 5.2.0 or later (plugin routes, Whisper server mode); the
+  development MVP runs on 5.1.3
 - openDesk with Jitsi (verified on Jitsi `stable-11031`)
 - A GPU node for the Whisper server is recommended; a CPU variant exists
   for small installations
