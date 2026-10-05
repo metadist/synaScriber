@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Plugin\SynaScriber\Service;
 
 use App\Entity\User;
+use App\Repository\UserRepository;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -34,6 +35,8 @@ final readonly class SessionService
         private WhisperClient $whisper,
         private TranscriptRenderer $renderer,
         private TranscriptWriter $writer,
+        private ParticipantResolver $participants,
+        private UserRepository $users,
         private Settings $settings,
         private LoggerInterface $logger,
     ) {
@@ -67,6 +70,8 @@ final readonly class SessionService
             'startedAt' => $now,
             'checkedAt' => $now,
             'roster' => [],
+            'attendees' => [],
+            'files' => [],
         ];
         $this->store->save($session);
         $this->store->markRoom($room, $session['ref']);
@@ -81,7 +86,7 @@ final readonly class SessionService
 
         $session['state'] = 'running';
         $session['meetingId'] = is_string($answer['meetingId'] ?? null) ? $answer['meetingId'] : null;
-        $session['roster'] = $this->roster($answer['participants'] ?? []);
+        $session = $this->absorb($session, $answer);
         $this->store->save($session);
         $this->logger->info('synascriber: notes started', ['ref' => $session['ref'], 'room' => $room, 'user' => $session['starterId']]);
 
@@ -101,6 +106,7 @@ final readonly class SessionService
             return $session;
         }
 
+        $session = $this->refresh($session);
         $session = $this->markStopping($session);
         try {
             $this->prosody->stop((string) $session['room'], $ref);
@@ -197,29 +203,62 @@ final readonly class SessionService
             return $this->close($session);
         }
 
-        try {
-            $session = $this->learnSpeaker($session, $segments[0]['speaker'], true);
-            $zone = $this->settings->timezone();
-            $file = $this->writer->write(
-                (int) $session['starterId'],
-                (string) $session['folder'],
-                $this->renderer->filename($session, $zone),
-                $this->renderer->render($session, $segments, $zone),
-            );
-        } catch (SessionException $e) {
-            $this->logger->error('synascriber: transcript not saved', ['ref' => $ref, 'error' => $e->getMessage()]);
+        $session = $this->refresh($session);
+        $zone = $this->settings->timezone();
+        $filename = $this->renderer->filename($session, $zone);
+        $markdown = $this->renderer->render($session, $segments, $zone);
+        $files = is_array($session['files'] ?? null) ? $session['files'] : [];
+        $failures = 0;
 
-            return $this->fail($session, $e->errorCode);
+        foreach ($this->recipients($session) as $userId => $user) {
+            if (isset($files[$userId])) {
+                continue;
+            }
+            try {
+                $files[$userId] = $this->writer->write($user, $ref, (string) $session['folder'], $filename, $markdown);
+            } catch (SessionException $e) {
+                ++$failures;
+                $this->logger->error('synascriber: transcript not saved for one person', ['ref' => $ref, 'user' => $userId, 'error' => $e->getMessage()]);
+            }
+        }
+
+        $session['files'] = $files;
+        $session['fileName'] = $filename;
+        $session['segmentCount'] = count($segments);
+        $session['deliveryFailures'] = $failures;
+        if (!isset($files[(int) $session['starterId']])) {
+            return $this->fail($session, 'file_not_saved');
         }
 
         $session['state'] = 'saved';
-        $session['fileId'] = $file['id'];
-        $session['fileName'] = $file['filename'];
-        $session['segmentCount'] = count($segments);
+        $session['fileId'] = $files[(int) $session['starterId']];
         $this->store->deleteSegments($ref);
-        $this->logger->info('synascriber: transcript saved', ['ref' => $ref, 'file' => $file['id'], 'segments' => count($segments)]);
+        $this->logger->info('synascriber: transcript saved', ['ref' => $ref, 'recipients' => count($files), 'failed' => $failures, 'segments' => count($segments)]);
 
         return $this->close($session);
+    }
+
+    /**
+     * The starter first, then every signed-in participant with a Synaplan
+     * account (created on demand) unless the admin limited it to the starter.
+     *
+     * @param array<string, mixed> $session
+     *
+     * @return array<int, User>
+     */
+    private function recipients(array $session): array
+    {
+        $recipients = [];
+        $starter = $this->users->find((int) $session['starterId']);
+        if ($starter instanceof User) {
+            $recipients[(int) $starter->getId()] = $starter;
+        }
+        if ($this->settings->shareWithParticipants()) {
+            $attendees = is_array($session['attendees'] ?? null) ? $session['attendees'] : [];
+            $recipients += $this->participants->accounts($attendees);
+        }
+
+        return $recipients;
     }
 
     /**
@@ -231,6 +270,10 @@ final readonly class SessionService
      */
     public function view(array $session, ?User $viewer): array
     {
+        $viewerId = null === $viewer ? 0 : (int) $viewer->getId();
+        $files = is_array($session['files'] ?? null) ? $session['files'] : [];
+        $mine = $viewerId === (int) $session['starterId'];
+
         return [
             'id' => $session['ref'],
             'room' => $session['room'],
@@ -240,25 +283,28 @@ final readonly class SessionService
             'startedBy' => $session['starterName'] ?? '',
             'startedAt' => $this->iso($session['startedAt'] ?? null),
             'stoppedAt' => $this->iso($session['stoppedAt'] ?? null),
-            'mine' => null !== $viewer && (int) $viewer->getId() === (int) $session['starterId'],
+            'mine' => $mine,
+            'received' => !$mine && isset($files[$viewerId]),
             'canStop' => null !== $viewer && $this->canStop($session, $viewer) && in_array($session['state'], self::ACTIVE, true),
-            'fileId' => $session['fileId'] ?? null,
+            'fileId' => $files[$viewerId] ?? null,
             'fileName' => $session['fileName'] ?? null,
+            'recipients' => count($files),
+            'notDelivered' => $mine ? (int) ($session['deliveryFailures'] ?? 0) : 0,
             'segments' => (int) ($session['segmentCount'] ?? 0),
             'error' => $session['error'] ?? null,
         ];
     }
 
     /**
-     * The viewer's latest session in this room that ended in the last few
-     * minutes, so the loader can say what happened after Stop.
+     * The viewer's latest notes in this room (started or received) that ended
+     * in the last few minutes, so the loader can say what happened after Stop.
      *
      * @return array<string, mixed>|null
      */
     public function recentForRoom(User $user, string $room): ?array
     {
         $room = $this->room($room);
-        foreach ($this->store->startedBy((int) $user->getId(), 10) as $session) {
+        foreach ($this->store->forUser((int) $user->getId(), 10) as $session) {
             if ($session['room'] === $room && in_array($session['state'], self::FINAL, true)
                 && time() - (int) ($session['finishedAt'] ?? 0) <= self::RECENT_SECONDS) {
                 return $session;
@@ -269,11 +315,13 @@ final readonly class SessionService
     }
 
     /**
+     * Notes the person started or received, newest first.
+     *
      * @return list<array<string, mixed>>
      */
-    public function startedBy(User $user, int $limit = 50): array
+    public function forUser(User $user, int $limit = 50): array
     {
-        return array_map(fn (array $s): array => $this->tick($s), $this->store->startedBy((int) $user->getId(), $limit));
+        return array_map(fn (array $s): array => $this->tick($s), $this->store->forUser((int) $user->getId(), $limit));
     }
 
     /**
@@ -313,15 +361,77 @@ final readonly class SessionService
 
             return $session;
         }
+        $session = $this->absorb($session, $state);
         if (true !== ($state['transcribing'] ?? false) || ($state['ref'] ?? null) !== $session['ref']) {
             $session['endReason'] = true === ($state['exists'] ?? false) ? 'stopped_in_jitsi' : 'meeting_ended';
 
             return $this->markStopping($session);
         }
-        $session['roster'] = array_replace($session['roster'] ?? [], $this->roster($state['participants'] ?? []));
         $this->store->save($session);
 
         return $session;
+    }
+
+    /**
+     * Merges the room's participants (names by endpoint) and attendees
+     * (identities of everyone who was there while notes were on).
+     *
+     * @param array<string, mixed> $session
+     * @param array<string, mixed> $answer  a Prosody start or state answer
+     *
+     * @return array<string, mixed>
+     */
+    private function absorb(array $session, array $answer): array
+    {
+        $roster = is_array($session['roster'] ?? null) ? $session['roster'] : [];
+        $attendees = is_array($session['attendees'] ?? null) ? $session['attendees'] : [];
+        foreach (['participants', 'attendees'] as $list) {
+            $roster = array_replace($roster, $this->roster($answer[$list] ?? []));
+            $attendees = array_replace($attendees, $this->identities($answer[$list] ?? []));
+        }
+        $session['roster'] = $roster;
+        $session['attendees'] = $attendees;
+
+        return $session;
+    }
+
+    /**
+     * Fresh participants from Jitsi, if the room still exists.
+     *
+     * @param array<string, mixed> $session
+     *
+     * @return array<string, mixed>
+     */
+    private function refresh(array $session): array
+    {
+        try {
+            return $this->absorb($session, $this->prosody->state((string) $session['room']));
+        } catch (SessionException) {
+            return $session;
+        }
+    }
+
+    /**
+     * @return array<string, array{name: string, email: string, sub: string}> keyed by subject
+     */
+    private function identities(mixed $participants): array
+    {
+        $identities = [];
+        if (!is_array($participants)) {
+            return $identities;
+        }
+        foreach ($participants as $participant) {
+            if (!is_array($participant) || !is_string($participant['sub'] ?? null) || !is_string($participant['email'] ?? null)) {
+                continue;
+            }
+            $identities[$participant['sub']] = [
+                'name' => mb_substr(trim((string) ($participant['name'] ?? '')), 0, 80),
+                'email' => mb_substr(trim($participant['email']), 0, 200),
+                'sub' => mb_substr(trim($participant['sub']), 0, 80),
+            ];
+        }
+
+        return $identities;
     }
 
     /**
@@ -329,20 +439,15 @@ final readonly class SessionService
      *
      * @return array<string, mixed>
      */
-    private function learnSpeaker(array $session, string $speaker, bool $always = false): array
+    private function learnSpeaker(array $session, string $speaker): array
     {
         $endpoint = TranscriptRenderer::endpointOf($speaker);
         $roster = is_array($session['roster'] ?? null) ? $session['roster'] : [];
-        if (!$always && '' !== trim((string) ($roster[$endpoint] ?? ''))) {
+        if ('' !== trim((string) ($roster[$endpoint] ?? ''))) {
             return $session;
         }
-        try {
-            $state = $this->prosody->state((string) $session['room']);
-            $session['roster'] = array_replace($roster, $this->roster($state['participants'] ?? []));
-        } catch (SessionException) {
-        }
 
-        return $session;
+        return $this->refresh($session);
     }
 
     /**

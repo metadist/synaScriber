@@ -14,11 +14,11 @@ final class TranscriptRenderer
     private const MERGE_GAP_MS = 30_000;
 
     private const COPY = [
-        'en' => ['title' => 'Meeting notes', 'started_by' => 'Started by', 'time' => 'Time', 'language' => 'Language', 'speakers' => 'Speakers', 'participant' => 'Participant', 'audio' => 'Audio was not kept. This text was produced by speech recognition and can contain mistakes.', 'name' => 'English'],
-        'de' => ['title' => 'Mitschrift', 'started_by' => 'Gestartet von', 'time' => 'Zeit', 'language' => 'Sprache', 'speakers' => 'Sprechende', 'participant' => 'Teilnehmende Person', 'audio' => 'Audio wurde nicht gespeichert. Dieser Text stammt aus der Spracherkennung und kann Fehler enthalten.', 'name' => 'Deutsch'],
-        'es' => ['title' => 'Notas de la reunión', 'started_by' => 'Iniciado por', 'time' => 'Hora', 'language' => 'Idioma', 'speakers' => 'Participantes que hablaron', 'participant' => 'Participante', 'audio' => 'El audio no se guardó. Este texto procede del reconocimiento de voz y puede contener errores.', 'name' => 'Español'],
-        'fr' => ['title' => 'Notes de réunion', 'started_by' => 'Lancé par', 'time' => 'Heure', 'language' => 'Langue', 'speakers' => 'Intervenants', 'participant' => 'Participant', 'audio' => "L'audio n'a pas été conservé. Ce texte provient de la reconnaissance vocale et peut contenir des erreurs.", 'name' => 'Français'],
-        'tr' => ['title' => 'Toplantı notları', 'started_by' => 'Başlatan', 'time' => 'Saat', 'language' => 'Dil', 'speakers' => 'Konuşanlar', 'participant' => 'Katılımcı', 'audio' => 'Ses kaydedilmedi. Bu metin konuşma tanımadan gelir ve hata içerebilir.', 'name' => 'Türkçe'],
+        'en' => ['present' => 'Participants', 'title' => 'Meeting notes', 'started_by' => 'Started by', 'time' => 'Time', 'language' => 'Language', 'speakers' => 'Speakers', 'participant' => 'Participant', 'audio' => 'Audio was not kept. This text was produced by speech recognition and can contain mistakes.', 'name' => 'English'],
+        'de' => ['present' => 'Teilnehmende', 'title' => 'Mitschrift', 'started_by' => 'Gestartet von', 'time' => 'Zeit', 'language' => 'Sprache', 'speakers' => 'Sprechende', 'participant' => 'Teilnehmende Person', 'audio' => 'Audio wurde nicht gespeichert. Dieser Text stammt aus der Spracherkennung und kann Fehler enthalten.', 'name' => 'Deutsch'],
+        'es' => ['present' => 'Participantes', 'title' => 'Notas de la reunión', 'started_by' => 'Iniciado por', 'time' => 'Hora', 'language' => 'Idioma', 'speakers' => 'Participantes que hablaron', 'participant' => 'Participante', 'audio' => 'El audio no se guardó. Este texto procede del reconocimiento de voz y puede contener errores.', 'name' => 'Español'],
+        'fr' => ['present' => 'Participants', 'title' => 'Notes de réunion', 'started_by' => 'Lancé par', 'time' => 'Heure', 'language' => 'Langue', 'speakers' => 'Intervenants', 'participant' => 'Participant', 'audio' => "L'audio n'a pas été conservé. Ce texte provient de la reconnaissance vocale et peut contenir des erreurs.", 'name' => 'Français'],
+        'tr' => ['present' => 'Katılımcılar', 'title' => 'Toplantı notları', 'started_by' => 'Başlatan', 'time' => 'Saat', 'language' => 'Dil', 'speakers' => 'Konuşanlar', 'participant' => 'Katılımcı', 'audio' => 'Ses kaydedilmedi. Bu metin konuşma tanımadan gelir ve hata içerebilir.', 'name' => 'Türkçe'],
     ];
 
     /**
@@ -41,6 +41,7 @@ final class TranscriptRenderer
             sprintf('- %s: %s – %s (%s)', $copy['time'], $start, $end, $zone->getName()),
             sprintf('- %s: %s', $copy['language'], self::COPY[$session['language'] ?? '']['name'] ?? (string) ($session['language'] ?? '')),
             sprintf('- %s: %s', $copy['speakers'], implode(', ', array_unique(array_values($labels)))),
+            sprintf('- %s: %s', $copy['present'], implode(', ', $this->present($session, $labels))),
             '',
             sprintf('_%s_', $copy['audio']),
             '',
@@ -118,6 +119,29 @@ final class TranscriptRenderer
         }
 
         return $turns;
+    }
+
+    /**
+     * Everyone seen in the room while notes were on, also those who never
+     * spoke, sorted by name.
+     *
+     * @param array<string, mixed>  $session
+     * @param array<string, string> $labels
+     *
+     * @return list<string>
+     */
+    private function present(array $session, array $labels): array
+    {
+        $names = array_values($labels);
+        foreach (['roster', 'attendees'] as $list) {
+            foreach (is_array($session[$list] ?? null) ? $session[$list] : [] as $entry) {
+                $names[] = trim((string) (is_array($entry) ? ($entry['name'] ?? '') : $entry));
+            }
+        }
+        $names = array_values(array_unique(array_filter($names, static fn (string $n): bool => '' !== $n)));
+        natcasesort($names);
+
+        return array_values($names);
     }
 
     private function clock(int $timestamp, \DateTimeZone $zone, string $format): string

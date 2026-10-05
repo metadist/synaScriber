@@ -35,10 +35,13 @@
   var COPY = {
     en: {
       button: 'Meeting notes', start_title: 'Start meeting notes', language: 'Meeting language', folder: 'Save in Synaplan Files folder',
-      consent: 'Everyone in this meeting will see that notes are on. Speech becomes text on your organisation\'s servers; audio is not kept.',
+      consent: 'Everyone in this meeting will see that notes are on, and everyone signed in gets them in Synaplan Files › Generated. Speech becomes text on your organisation\'s servers; audio is not kept.',
+      consent_own: 'Everyone in this meeting will see that notes are on; only you get them in Synaplan Files › Generated. Speech becomes text on your organisation\'s servers; audio is not kept.',
       start: 'Start meeting notes', cancel: 'Cancel', stop: 'Stop notes', on: 'Notes on', by: 'started by {name}', since: 'since {time}',
       starting: 'Starting meeting notes…', saving: 'Saving the notes…', sign_in: 'Sign in to use meeting notes', signing_in: 'Signing in…',
-      saved: 'Notes saved in Synaplan Files › {folder}.', open: 'Open the notes', nothing: 'Notes stopped. Nobody spoke, so no file was written.',
+      saved: 'Notes saved in Synaplan Files › Generated ({folder}).', saved_all: 'Notes saved in Synaplan Files › Generated ({folder}) for everyone who was signed in: {count} people.',
+      saved_partial: '{count} participants did not get a copy. Ask your administrator.', received: 'The meeting notes {name} started are in your Synaplan Files › Generated ({folder}).',
+      open: 'Open the notes', nothing: 'Notes stopped. Nobody spoke, so no file was written.',
       failed: 'Meeting notes stopped: {reason} Nothing more is being written down.', close: 'Close',
       stop_hint: 'Only {name} or an administrator can stop the notes here. A moderator can stop them with Jitsi\'s own control.',
       err_already_running: 'Meeting notes are already on in this meeting.',
@@ -53,10 +56,13 @@
     },
     de: {
       button: 'Mitschrift', start_title: 'Mitschrift starten', language: 'Sprache der Besprechung', folder: 'In diesem Ordner in Synaplan Dateien speichern',
-      consent: 'Alle in dieser Besprechung sehen, dass mitgeschrieben wird. Sprache wird auf den Servern Ihrer Organisation zu Text; Audio wird nicht gespeichert.',
+      consent: 'Alle in dieser Besprechung sehen, dass mitgeschrieben wird, und alle Angemeldeten erhalten die Mitschrift in Synaplan Dateien › Erzeugt. Sprache wird auf den Servern Ihrer Organisation zu Text; Audio wird nicht gespeichert.',
+      consent_own: 'Alle in dieser Besprechung sehen, dass mitgeschrieben wird; nur Sie erhalten die Mitschrift in Synaplan Dateien › Erzeugt. Sprache wird auf den Servern Ihrer Organisation zu Text; Audio wird nicht gespeichert.',
       start: 'Mitschrift starten', cancel: 'Abbrechen', stop: 'Mitschrift beenden', on: 'Mitschrift läuft', by: 'gestartet von {name}', since: 'seit {time}',
       starting: 'Mitschrift wird gestartet…', saving: 'Mitschrift wird gespeichert…', sign_in: 'Anmelden, um die Mitschrift zu nutzen', signing_in: 'Anmeldung…',
-      saved: 'Mitschrift gespeichert in Synaplan Dateien › {folder}.', open: 'Mitschrift öffnen', nothing: 'Mitschrift beendet. Niemand hat gesprochen, daher wurde keine Datei geschrieben.',
+      saved: 'Mitschrift gespeichert in Synaplan Dateien › Erzeugt ({folder}).', saved_all: 'Mitschrift gespeichert in Synaplan Dateien › Erzeugt ({folder}) für alle Angemeldeten: {count} Personen.',
+      saved_partial: '{count} Teilnehmende haben keine Kopie erhalten. Wenden Sie sich an die Administration.', received: 'Die von {name} gestartete Mitschrift liegt in Ihren Synaplan Dateien › Erzeugt ({folder}).',
+      open: 'Mitschrift öffnen', nothing: 'Mitschrift beendet. Niemand hat gesprochen, daher wurde keine Datei geschrieben.',
       failed: 'Mitschrift beendet: {reason} Es wird nichts mehr mitgeschrieben.', close: 'Schließen',
       stop_hint: 'Nur {name} oder eine Administratorin bzw. ein Administrator kann die Mitschrift hier beenden. Moderierende können sie über Jitsi beenden.',
       err_already_running: 'In dieser Besprechung läuft bereits eine Mitschrift.',
@@ -71,10 +77,13 @@
     },
     es: {
       button: 'Notas de la reunión', start_title: 'Iniciar notas de la reunión', language: 'Idioma de la reunión', folder: 'Guardar en esta carpeta de Archivos de Synaplan',
-      consent: 'Todos en esta reunión verán que se están tomando notas. La voz se convierte en texto en los servidores de tu organización; el audio no se guarda.',
+      consent: 'Todos en esta reunión verán que se están tomando notas, y todas las personas con sesión iniciada las recibirán en Archivos de Synaplan › Generados. La voz se convierte en texto en los servidores de tu organización; el audio no se guarda.',
+      consent_own: 'Todos en esta reunión verán que se están tomando notas; solo tú las recibirás en Archivos de Synaplan › Generados. La voz se convierte en texto en los servidores de tu organización; el audio no se guarda.',
       start: 'Iniciar notas', cancel: 'Cancelar', stop: 'Detener notas', on: 'Notas activas', by: 'iniciadas por {name}', since: 'desde las {time}',
       starting: 'Iniciando las notas…', saving: 'Guardando las notas…', sign_in: 'Inicia sesión para usar las notas', signing_in: 'Iniciando sesión…',
-      saved: 'Notas guardadas en Archivos de Synaplan › {folder}.', open: 'Abrir las notas', nothing: 'Notas detenidas. Nadie habló, así que no se creó ningún archivo.',
+      saved: 'Notas guardadas en Archivos de Synaplan › Generados ({folder}).', saved_all: 'Notas guardadas en Archivos de Synaplan › Generados ({folder}) para todas las personas con sesión iniciada: {count}.',
+      saved_partial: '{count} participantes no recibieron una copia. Consulta a tu administrador.', received: 'Las notas que inició {name} están en tus Archivos de Synaplan › Generados ({folder}).',
+      open: 'Abrir las notas', nothing: 'Notas detenidas. Nadie habló, así que no se creó ningún archivo.',
       failed: 'Las notas se detuvieron: {reason} Ya no se anota nada más.', close: 'Cerrar',
       stop_hint: 'Solo {name} o un administrador puede detener las notas aquí. Un moderador puede detenerlas con el control de Jitsi.',
       err_already_running: 'Ya hay notas activas en esta reunión.',
@@ -89,10 +98,13 @@
     },
     fr: {
       button: 'Notes de réunion', start_title: 'Lancer les notes de réunion', language: 'Langue de la réunion', folder: 'Enregistrer dans ce dossier des Fichiers Synaplan',
-      consent: 'Tous les participants verront que des notes sont prises. La parole devient du texte sur les serveurs de votre organisation ; l\'audio n\'est pas conservé.',
+      consent: 'Tous les participants verront que des notes sont prises, et chaque personne connectée les recevra dans Fichiers Synaplan › Générés. La parole devient du texte sur les serveurs de votre organisation ; l\'audio n\'est pas conservé.',
+      consent_own: 'Tous les participants verront que des notes sont prises ; vous seul(e) les recevrez dans Fichiers Synaplan › Générés. La parole devient du texte sur les serveurs de votre organisation ; l\'audio n\'est pas conservé.',
       start: 'Lancer les notes', cancel: 'Annuler', stop: 'Arrêter les notes', on: 'Notes en cours', by: 'lancées par {name}', since: 'depuis {time}',
       starting: 'Lancement des notes…', saving: 'Enregistrement des notes…', sign_in: 'Connectez-vous pour utiliser les notes', signing_in: 'Connexion…',
-      saved: 'Notes enregistrées dans Fichiers Synaplan › {folder}.', open: 'Ouvrir les notes', nothing: 'Notes arrêtées. Personne n\'a parlé, aucun fichier n\'a été créé.',
+      saved: 'Notes enregistrées dans Fichiers Synaplan › Générés ({folder}).', saved_all: 'Notes enregistrées dans Fichiers Synaplan › Générés ({folder}) pour chaque personne connectée : {count}.',
+      saved_partial: '{count} participants n\'ont pas reçu de copie. Adressez-vous à votre administrateur.', received: 'Les notes lancées par {name} sont dans vos Fichiers Synaplan › Générés ({folder}).',
+      open: 'Ouvrir les notes', nothing: 'Notes arrêtées. Personne n\'a parlé, aucun fichier n\'a été créé.',
       failed: 'Les notes se sont arrêtées : {reason} Plus rien n\'est noté.', close: 'Fermer',
       stop_hint: 'Seul(e) {name} ou un administrateur peut arrêter les notes ici. Un modérateur peut les arrêter avec la commande de Jitsi.',
       err_already_running: 'Des notes sont déjà en cours dans cette réunion.',
@@ -107,10 +119,13 @@
     },
     tr: {
       button: 'Toplantı notları', start_title: 'Toplantı notlarını başlat', language: 'Toplantı dili', folder: 'Synaplan Dosyalar\'da bu klasöre kaydet',
-      consent: 'Bu toplantıdaki herkes not alındığını görür. Konuşma, kuruluşunuzun sunucularında metne dönüşür; ses saklanmaz.',
+      consent: 'Bu toplantıdaki herkes not alındığını görür; oturum açan herkes notları Synaplan Dosyalar › Üretilen bölümünde alır. Konuşma, kuruluşunuzun sunucularında metne dönüşür; ses saklanmaz.',
+      consent_own: 'Bu toplantıdaki herkes not alındığını görür; notları yalnızca siz Synaplan Dosyalar › Üretilen bölümünde alırsınız. Konuşma, kuruluşunuzun sunucularında metne dönüşür; ses saklanmaz.',
       start: 'Notları başlat', cancel: 'İptal', stop: 'Notları durdur', on: 'Notlar açık', by: '{name} başlattı', since: '{time} itibarıyla',
       starting: 'Notlar başlatılıyor…', saving: 'Notlar kaydediliyor…', sign_in: 'Notları kullanmak için oturum açın', signing_in: 'Oturum açılıyor…',
-      saved: 'Notlar Synaplan Dosyalar › {folder} klasörüne kaydedildi.', open: 'Notları aç', nothing: 'Notlar durduruldu. Kimse konuşmadığı için dosya oluşturulmadı.',
+      saved: 'Notlar Synaplan Dosyalar › Üretilen ({folder}) bölümüne kaydedildi.', saved_all: 'Notlar, oturum açan herkes için Synaplan Dosyalar › Üretilen ({folder}) bölümüne kaydedildi: {count} kişi.',
+      saved_partial: '{count} katılımcı kopya alamadı. Yöneticinize başvurun.', received: '{name} tarafından başlatılan notlar Synaplan Dosyalar › Üretilen ({folder}) bölümünde.',
+      open: 'Notları aç', nothing: 'Notlar durduruldu. Kimse konuşmadığı için dosya oluşturulmadı.',
       failed: 'Toplantı notları durdu: {reason} Artık hiçbir şey not edilmiyor.', close: 'Kapat',
       stop_hint: 'Notları burada yalnızca {name} veya bir yönetici durdurabilir. Moderatörler Jitsi\'nin kendi denetimiyle durdurabilir.',
       err_already_running: 'Bu toplantıda notlar zaten açık.',
@@ -381,8 +396,14 @@
   }
 
   function showOutcome(session) {
-    if (session.state === 'saved') {
-      view.notice = { kind: 'saved', text: t('saved', { folder: session.folder }), link: CONFIG.synaplan + '/files?file=' + session.fileId }
+    if (session.state === 'saved' && session.fileId) {
+      var text = session.received
+        ? t('received', { name: session.startedBy, folder: session.folder })
+        : t(session.recipients > 1 ? 'saved_all' : 'saved', { folder: session.folder, count: session.recipients })
+      if (session.mine && session.notDelivered > 0) {
+        text += ' ' + t('saved_partial', { count: session.notDelivered })
+      }
+      view.notice = { kind: 'saved', text: text, link: CONFIG.synaplan + '/files?file=' + session.fileId }
     } else if (session.state === 'nothing_to_save') {
       view.notice = { kind: 'info', text: t('nothing') }
     } else {
@@ -483,7 +504,7 @@
       el('h2', { id: 'syn-title', text: t('start_title') }),
       el('label', { for: 'syn-language', text: t('language') }), select,
       el('label', { for: 'syn-folder', text: t('folder') }), folder,
-      el('p', { class: 'hint', text: t('consent') }),
+      el('p', { class: 'hint', text: t(view.info && view.info.shared === false ? 'consent_own' : 'consent') }),
       el('div', { class: 'row' }, [start, el('button', { class: 'act secondary', type: 'button', text: t('cancel'), onclick: function () { view.dialog = false; render() } })]),
     ])
     box.addEventListener('keydown', function (event) {

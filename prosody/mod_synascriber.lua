@@ -23,7 +23,7 @@ local is_jibri = util.is_jibri;
 local is_transcriber = util.is_transcriber;
 local process_host_module = util.process_host_module;
 
-local VERSION = '0.1.0';
+local VERSION = '0.2.0';
 local muc_domain = module:get_option_string('synascriber_muc', 'muc.' .. module.host);
 local secret = os.getenv('SYNASCRIBER_SECRET') or module:get_option_string('synascriber_secret', '');
 
@@ -77,17 +77,55 @@ local function transcribing(room)
     return (recording and recording.isTranscribingEnabled == true and room.jitsiMetadata.asyncTranscription == true) or false;
 end
 
+-- One participant: endpoint id, display name and, for signed-in people, the
+-- identity from their Jitsi token (Keycloak sub and email).
+local function describe(occupant)
+    local endpoint = jid.resource(occupant.nick);
+    local who = occupant.jid or '';
+    if not endpoint or endpoint == 'focus' or who:match('^focus@') or is_jibri(occupant) or is_transcriber(who) then
+        return nil;
+    end
+    local presence = occupant:get_presence();
+    local entry = {
+        id = endpoint;
+        name = presence and presence:get_child_text('nick', 'http://jabber.org/protocol/nick') or '';
+    };
+    local session = prosody.full_sessions[who];
+    local user = session and session.jitsi_meet_context_user;
+    if type(user) == 'table' then
+        entry.sub = type(user.id) == 'string' and user.id or nil;
+        entry.email = type(user.email) == 'string' and user.email or nil;
+        if entry.name == '' and type(user.name) == 'string' then
+            entry.name = user.name;
+        end
+    end
+    return entry;
+end
+
 local function participants(room)
     local list = {};
     for _, occupant in room:each_occupant() do
-        local endpoint = jid.resource(occupant.nick);
-        local who = occupant.jid or '';
-        if endpoint and endpoint ~= 'focus' and not who:match('^focus@')
-                and not is_jibri(occupant) and not is_transcriber(who) then
-            local presence = occupant:get_presence();
-            local name = presence and presence:get_child_text('nick', 'http://jabber.org/protocol/nick') or '';
-            table.insert(list, { id = endpoint; name = name; });
+        local entry = describe(occupant);
+        if entry then
+            table.insert(list, entry);
         end
+    end
+    return list;
+end
+
+-- Everyone who was in the room while notes were on, also after they left.
+local function remember(room, occupant)
+    local entry = describe(occupant);
+    if not entry or not room._synascriber_attendees then
+        return;
+    end
+    room._synascriber_attendees[entry.sub or entry.email or entry.id] = entry;
+end
+
+local function attendees(room)
+    local list = {};
+    for _, entry in pairs(room._synascriber_attendees or {}) do
+        table.insert(list, entry);
     end
     return list;
 end
@@ -100,6 +138,10 @@ local function turn_on(room, ref, language)
     recording.isTranscribingEnabled = true;
     meta.recording = recording;
     room._synascriber_ref = ref;
+    room._synascriber_attendees = {};
+    for _, occupant in room:each_occupant() do
+        remember(room, occupant);
+    end
     broadcast(room);
 end
 
@@ -134,6 +176,11 @@ local function handle_state(event)
         end
         return response(400, { ok = false; error = err });
     end
+    if room._synascriber_ref then
+        for _, occupant in room:each_occupant() do
+            remember(room, occupant);
+        end
+    end
     return response(200, {
         ok = true;
         exists = true;
@@ -141,6 +188,7 @@ local function handle_state(event)
         ref = room._synascriber_ref or json.null;
         meetingId = room._data and room._data.meetingId or json.null;
         participants = participants(room);
+        attendees = attendees(room);
     });
 end
 
@@ -166,6 +214,7 @@ local function handle_start(event)
         ok = true;
         meetingId = room._data and room._data.meetingId or json.null;
         participants = participants(room);
+        attendees = attendees(room);
     });
 end
 
@@ -206,7 +255,14 @@ module:hook('jitsi-metadata-allow-moderation', function(event)
 end);
 
 -- A moderator stopped transcription from Jitsi: clear our flags too.
+-- People who join while notes are on are remembered as attendees.
 process_host_module(muc_domain, function(host_module)
+    host_module:hook('muc-occupant-joined', function(event)
+        if event.room._synascriber_ref then
+            remember(event.room, event.occupant);
+        end
+    end);
+
     host_module:hook('jitsi-metadata-updated', function(event)
         local room = event.room;
         if event.key ~= 'recording' or not room._synascriber_ref then

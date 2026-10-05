@@ -28,7 +28,7 @@ final class UserController extends AbstractController
     }
 
     #[Route('/sessions', name: 'sessions', methods: ['GET'])]
-    #[OA\Get(summary: 'Meeting notes started by me, newest first')]
+    #[OA\Get(summary: 'Meeting notes I started or received, newest first')]
     #[OA\Response(response: 200, description: 'List of sessions with their files')]
     public function sessions(#[CurrentUser] ?User $user): JsonResponse
     {
@@ -37,7 +37,7 @@ final class UserController extends AbstractController
         }
 
         try {
-            $list = $this->sessions->startedBy($user);
+            $list = $this->sessions->forUser($user);
         } catch (SessionException $e) {
             return $this->json(['error' => $e->errorCode, 'message' => $e->getMessage(), 'sessions' => []], 'not_configured' === $e->errorCode ? 200 : $e->httpStatus);
         }

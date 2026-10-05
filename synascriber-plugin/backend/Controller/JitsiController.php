@@ -55,6 +55,7 @@ final class JitsiController extends AbstractController
             'languages' => $this->settings->languages(),
             'defaultLanguage' => $this->settings->defaultLanguage(),
             'defaultFolder' => $this->settings->defaultFolder(),
+            'shared' => $this->settings->shareWithParticipants(),
             'session' => null === $session ? null : $this->sessions->view($session, $user),
             'recent' => null === $recent ? null : $this->sessions->view($recent, $user),
         ]);

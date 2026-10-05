@@ -96,13 +96,16 @@ final readonly class SessionStore
     }
 
     /**
+     * Sessions the person started or received a copy of.
+     *
      * @return list<array<string, mixed>>
      */
-    public function startedBy(int $userId, int $limit): array
+    public function forUser(int $userId, int $limit): array
     {
         $sessions = array_values(array_filter(
             $this->data->list($this->owner(), self::PLUGIN, self::TYPE_SESSION),
-            static fn (array $s): bool => (int) ($s['starterId'] ?? 0) === $userId,
+            static fn (array $s): bool => (int) ($s['starterId'] ?? 0) === $userId
+                || (is_array($s['files'] ?? null) && array_key_exists($userId, $s['files'])),
         ));
         usort($sessions, static fn (array $a, array $b): int => ($b['startedAt'] ?? 0) <=> ($a['startedAt'] ?? 0));
 

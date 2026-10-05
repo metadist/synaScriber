@@ -27,6 +27,7 @@ final readonly class Settings
         'prosody_secret' => '',
         'owner_user_id' => '0',
         'timezone' => 'Europe/Berlin',
+        'share_with_participants' => '1',
     ];
 
     private const SECRET_KEYS = ['prosody_secret'];
@@ -68,6 +69,15 @@ final readonly class Settings
     public function isEnabled(): bool
     {
         return '1' === $this->get('enabled');
+    }
+
+    /**
+     * Every signed-in participant gets the transcript in their own Files
+     * (Generated); off = only the person who started.
+     */
+    public function shareWithParticipants(): bool
+    {
+        return '1' === $this->get('share_with_participants');
     }
 
     public function ownerUserId(): int
@@ -131,6 +141,7 @@ final readonly class Settings
             $view[$key] = in_array($key, self::SECRET_KEYS, true) ? '' !== $this->get($key) : $this->get($key);
         }
         $view['enabled'] = $this->isEnabled();
+        $view['share_with_participants'] = $this->shareWithParticipants();
         $view['languages'] = $this->languages();
 
         return $view;
@@ -147,7 +158,7 @@ final readonly class Settings
     private function normalize(string $key, mixed $value): string
     {
         return match ($key) {
-            'enabled' => $value ? '1' : '0',
+            'enabled', 'share_with_participants' => $value ? '1' : '0',
             'default_language' => $this->language((string) $value),
             'languages' => implode(',', array_map(fn ($l) => $this->language((string) $l), is_array($value) ? $value : explode(',', (string) $value))),
             'default_folder' => $this->sanitizeFolder((string) $value),
