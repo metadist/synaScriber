@@ -23,7 +23,7 @@ local is_jibri = util.is_jibri;
 local is_transcriber = util.is_transcriber;
 local process_host_module = util.process_host_module;
 
-local VERSION = '0.2.0';
+local VERSION = '0.3.0';
 local muc_domain = module:get_option_string('synascriber_muc', 'muc.' .. module.host);
 local secret = os.getenv('SYNASCRIBER_SECRET') or module:get_option_string('synascriber_secret', '');
 
@@ -197,7 +197,7 @@ local function handle_start(event)
         return response(401, { ok = false; error = 'unauthorized' });
     end
     local data = body_of(event);
-    if not data or type(data.ref) ~= 'string' or not data.ref:match('^[%w%-]+$') then
+    if not data or type(data.ref) ~= 'string' or not data.ref:match('^[%w_%-]+$') then
         return response(400, { ok = false; error = 'invalid_request' });
     end
     local room, err = room_for(data.room);
