@@ -171,6 +171,7 @@ gives up; no retries beyond 3 × backoff).
 |---------------|---------|---------|----------|
 | `GET public/transcriber/sessions/{ref}` | Bind a bridge connection to a session. Called once on connect and every 30 s. | header `Authorization: Bearer <transcriber token>`, `?meetingId=` | 200 `{sessionId, state, language, profile:"balanced"|"fast"|"accurate", captions, glossary:[…], speakers:{endpointId:{name}}, excluded:[endpointId], maxConcurrency}`; 404 unknown ref; 409 meeting id mismatch or terminal ⇒ transcriber closes the socket (bridge reconnects are ignored) |
 | `POST public/transcriber/sessions/{ref}/audio` | One speech window. **The only way audio enters Synaplan.** | `multipart/form-data`: `audio` (Ogg/Opus, ≤ 2 MB, ≤ 30 s), `endpointId`, `seq`, `t0Ms`, `t1Ms` (relative to session start), `cut` (`pause`/`soft`/`hard`/`stop`), `prompt` (≤ 500 chars), `Idempotency-Key` header `<ref-hash8>:<endpointId>:<seq>` | 200 `{seq, text, language, speaker, dropped:null|"no_speech"|"hallucination"|"excluded"|"duplicate", segmentSeq}`; 409 session not accepting (stopping/terminal); 429/503 with `Retry-After` (speech busy or down; the plugin also records the gap) |
+| `POST public/transcriber/sessions/{ref}/preview` | Live caption of the window so far. **Never stored.** Only while the session is running and live captions are on. | `multipart/form-data`: `audio`, `endpointId`, `seq` (the number the final window will get), `t0Ms`, `t1Ms` | 200 `{seq, text, language, dropped:null|"no_speech"|"hallucination", speechEndMs:int|null}` (where the last speech ends, ms from the window start); 403 live captions off; 409 not running ⇒ no caption this time, the session goes on |
 | `POST public/transcriber/sessions/{ref}/events` | Lifecycle. | `{type:"connected"|"speaker-start"|"speaker-stop"|"stt-failure"|"session-end"|"finished", endpointId?, at, detail?}` | 204 |
 
 The plugin transcribes with `AiFacade::transcribe()` **as the session owner**
@@ -195,6 +196,25 @@ Outbound: `pong`, and when captions are on:
 `participant.id` is the **endpoint id** (not the tag), `name` comes from the
 roster. `language` is the session language (two-letter); see
 [04 §6](./04_jitsi_and_opendesk.md#6-jitsi-configjs) for the matching client setting.
+
+**Live captions while someone speaks.** While a speaker talks, the
+transcriber sends the window so far to `…/preview` every 1.5 s (every 3 s
+after a preview without speech; one preview in flight per speaker). A
+preview with text goes into the meeting as `is_interim: true` with the
+`message_id` the final window will carry, so the caption line grows and is
+then replaced by the final text. The preview also decides the window
+boundaries:
+
+| Preview answer | Transcriber does |
+|----------------|------------------|
+| text, and `duration − speechEndMs ≥ 700 ms` | ends the window at the previewed packets (`cut: "pause"`); newer packets start the next window |
+| no speech, window ≥ 4 s | drops those packets; a listening participant never reaches the 8 s hard cut, so silence costs no window |
+| answer arrives after its window was sent | ignored (no stale interim after the final) |
+
+`PREVIEW_EVERY_MS=0` turns previews off (per-window captions and 8 s cuts
+only); they are also off while the plugin's live captions are off. Silent
+windows that still reach speech recognition return no text because the
+speech server runs Silero VAD.
 
 ## 6. Identity in the Jitsi page
 
