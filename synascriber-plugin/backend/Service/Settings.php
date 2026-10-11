@@ -28,6 +28,7 @@ final readonly class Settings
         'owner_user_id' => '0',
         'timezone' => 'Europe/Berlin',
         'share_with_participants' => '1',
+        'captions' => '1',
     ];
 
     private const SECRET_KEYS = ['prosody_secret'];
@@ -78,6 +79,14 @@ final readonly class Settings
     public function shareWithParticipants(): bool
     {
         return '1' === $this->get('share_with_participants');
+    }
+
+    /**
+     * Live captions in the meeting while notes are on; off = only the file.
+     */
+    public function captionsOn(): bool
+    {
+        return '1' === $this->get('captions');
     }
 
     public function ownerUserId(): int
@@ -142,6 +151,7 @@ final readonly class Settings
         }
         $view['enabled'] = $this->isEnabled();
         $view['share_with_participants'] = $this->shareWithParticipants();
+        $view['captions'] = $this->captionsOn();
         $view['languages'] = $this->languages();
 
         return $view;
@@ -158,7 +168,7 @@ final readonly class Settings
     private function normalize(string $key, mixed $value): string
     {
         return match ($key) {
-            'enabled', 'share_with_participants' => $value ? '1' : '0',
+            'enabled', 'share_with_participants', 'captions' => $value ? '1' : '0',
             'default_language' => $this->language((string) $value),
             'languages' => implode(',', array_map(fn ($l) => $this->language((string) $l), is_array($value) ? $value : explode(',', (string) $value))),
             'default_folder' => $this->sanitizeFolder((string) $value),
