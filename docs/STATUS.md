@@ -15,8 +15,8 @@ here, not a chat message.
 | `MN-4` Prosody module | **dev MVP** | `mod_synascriber` 0.2.0: start/stop/state/health, client starts refused, attendees (Keycloak `sub` + email from the Jitsi token) for everyone present while notes are on. No busted specs yet. |
 | `MN-5` Transcriber plugin mode | **dev MVP** | `notes=<ref>` binding, windows to the plugin, 21/21 node tests. Fixed 8 s windows (no VAD yet). |
 | `MN-6` Transcript file | **dev MVP** | One Markdown copy per signed-in participant in their Sources › Generated (source `generated`, kind `document`, chosen folder), vectorized; speakers, participants, times. |
-| `MN-7` Jitsi surface | **dev MVP** | Floating button, dialog, banner, outcome with file link; Keycloak PKCE silent sign-in. |
-| `MN-8` Engine and quality | in progress | German Whisper on our GPU host; `synaplan-stt` image + `stt` chart in synaplan-charts#51. |
+| `MN-7` Jitsi surface | **dev MVP** | Floating button, dialog, banner, outcome with file link; Keycloak PKCE silent sign-in; live caption strip for everyone (per window today, interim-ready). |
+| `MN-8` Engine and quality | in progress | German Whisper on our GPU host with Silero VAD (no more phantom "Vielen Dank."); `synaplan-stt` image + `stt` chart in synaplan-charts#51, VAD on by default. |
 | `MN-9` v1.0 release | not started | |
 | `MN-10` v1.1 | not started | |
 | `MN-11` v1.2 | not started | |
@@ -30,6 +30,40 @@ here, not a chat message.
 | 2026-10-05 | Product owner: transcripts land for **all participants** in their Generated overview; pushing to OpenCloud / Nextcloud comes from there in a later release. D6 and D12 rewritten accordingly. |
 
 ## Log
+
+**2026-10-11 — Phantom "Vielen Dank." and live captions.** Real meetings
+on the dev cluster had "Vielen Dank." lines nobody said, always in the
+stream of the person who was listening. Cause: every unmuted participant's
+audio goes to Whisper in 8 s windows, also when they are silent; Whisper
+turns silence and room noise into stock phrases. Measured on the GPU host
+(German turbo model, windows through Opus like Jitsi audio):
+
+| Window (8 s) | VAD off (until today) | VAD on |
+|--------------|-----------------------|--------|
+| Digital silence | "Vielen Dank." | empty |
+| Quiet room noise (pink, −50 dBFS) | "Vielen Dank." | empty |
+| Other speaker leaking in at −35 dB | an invented sentence | empty |
+| Normal speech | correct | identical |
+| 2 s speech, then quiet | correct | identical |
+
+Fix: Silero VAD in `whisper-server` (`--vad`; the model was already on the
+host), live on the dev cluster since 2026-10-11. A no-speech window now returns empty text and the
+plugin writes nothing. The `stt` chart and image (synaplan-charts#51) turn
+VAD on by default so other targets do not regress.
+
+Live captions: the transcriber already sent every result back into the
+meeting; Jitsi hands it to all participants as a message from
+`transcriber` (verified: 6 results in 30 s at the second participant), but
+nobody saw it because Jitsi's own subtitles were off. The loader now shows
+a small caption strip (bottom centre, above the toolbar and the speaker
+name, at most 640 px wide, the last two speakers, names from Jitsi's
+roster, "You" for your own speech, fades after 7 s), for everyone in the
+meeting, signed in or not, with a per-browser **Captions: on/off** switch
+next to the notes button and a hide button on the strip. Interim results
+(`is_interim`) already update the same line, so step-by-step captions need
+no UI change. Today the text arrives per 8 s window (about 9–10 s after it
+was said). E2E checks own captions ("You:"), the other speaker's name, and
+the off/on switch.
 
 **2026-10-05 — Transcripts for every participant (plugin 0.2.0, Prosody
 module 0.2.0).** Product owner: the transcript lands for all participants
