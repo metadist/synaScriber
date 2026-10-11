@@ -32,7 +32,7 @@ here, not a chat message.
 ## Log
 
 **2026-10-11 — Step-by-step live captions; plugin on the transcriber
-session API.** Vultr ran a transcriber copy that existed in no repository
+session API.** The dev cluster ran a transcriber copy that existed in no repository
 (the MVP interface); synaplan `main` already spoke the session API of
 [02 §5.5](./02_architecture.md#55-transcriber--plugin-bearer-token-cluster-internal-source).
 The plugin (0.3.0) now implements it: `bind` with meeting-id check and
