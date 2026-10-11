@@ -53,6 +53,7 @@
       err_start_timeout: 'the start did not finish in time.',
       err_file_not_saved: 'the transcript could not be saved in Synaplan. Ask your administrator.',
       err_generic: 'Something went wrong. Try again in a minute.',
+      captions_on: 'Captions: on', captions_off: 'Captions: off', captions_region: 'Live captions', captions_hide: 'Hide captions', you: 'You', someone: 'Participant',
     },
     de: {
       button: 'Mitschrift', start_title: 'Mitschrift starten', language: 'Sprache der Besprechung', folder: 'Ordner in Synaplan Quellen',
@@ -74,6 +75,7 @@
       err_start_timeout: 'der Start wurde nicht rechtzeitig abgeschlossen.',
       err_file_not_saved: 'die Mitschrift konnte nicht in Synaplan gespeichert werden. Wenden Sie sich an die Administration.',
       err_generic: 'Etwas ist schiefgelaufen. Versuchen Sie es in einer Minute erneut.',
+      captions_on: 'Untertitel: an', captions_off: 'Untertitel: aus', captions_region: 'Live-Untertitel', captions_hide: 'Untertitel ausblenden', you: 'Sie', someone: 'Teilnehmende Person',
     },
     es: {
       button: 'Notas de la reunión', start_title: 'Iniciar notas de la reunión', language: 'Idioma de la reunión', folder: 'Carpeta en Fuentes de Synaplan',
@@ -95,6 +97,7 @@
       err_start_timeout: 'el inicio no terminó a tiempo.',
       err_file_not_saved: 'la transcripción no se pudo guardar en Synaplan. Consulta a tu administrador.',
       err_generic: 'Algo salió mal. Inténtalo de nuevo en un minuto.',
+      captions_on: 'Subtítulos: activados', captions_off: 'Subtítulos: desactivados', captions_region: 'Subtítulos en directo', captions_hide: 'Ocultar subtítulos', you: 'Tú', someone: 'Participante',
     },
     fr: {
       button: 'Notes de réunion', start_title: 'Lancer les notes de réunion', language: 'Langue de la réunion', folder: 'Dossier dans Sources Synaplan',
@@ -116,6 +119,7 @@
       err_start_timeout: 'le lancement n\'a pas abouti à temps.',
       err_file_not_saved: 'la transcription n\'a pas pu être enregistrée dans Synaplan. Adressez-vous à votre administrateur.',
       err_generic: 'Une erreur s\'est produite. Réessayez dans une minute.',
+      captions_on: 'Sous-titres : activés', captions_off: 'Sous-titres : désactivés', captions_region: 'Sous-titres en direct', captions_hide: 'Masquer les sous-titres', you: 'Vous', someone: 'Participant',
     },
     tr: {
       button: 'Toplantı notları', start_title: 'Toplantı notlarını başlat', language: 'Toplantı dili', folder: 'Synaplan Kaynaklar\'da klasör',
@@ -137,6 +141,7 @@
       err_start_timeout: 'başlatma zamanında tamamlanmadı.',
       err_file_not_saved: 'not dosyası Synaplan\'a kaydedilemedi. Yöneticinize başvurun.',
       err_generic: 'Bir sorun oluştu. Bir dakika sonra tekrar deneyin.',
+      captions_on: 'Altyazı: açık', captions_off: 'Altyazı: kapalı', captions_region: 'Canlı altyazı', captions_hide: 'Altyazıyı gizle', you: 'Siz', someone: 'Katılımcı',
     },
   }
   var LANGUAGE_NAMES = { de: 'Deutsch', en: 'English', es: 'Español', fr: 'Français', tr: 'Türkçe' }
@@ -564,6 +569,10 @@
       }
     }
 
+    if (captions.seen) {
+      wrap.appendChild(el('div', { class: 'row' }, [captionToggle()]))
+    }
+
     if (view.notice) {
       var notice = el('div', { class: 'banner ' + view.notice.kind, role: 'status', 'aria-live': 'polite' }, [el('span', { text: view.notice.text })])
       if (view.notice.link) {
@@ -573,6 +582,186 @@
       wrap.appendChild(notice)
     }
     shadow.appendChild(wrap)
+  }
+
+  // ---------------------------------------------------------------- captions
+
+  // The transcriber sends its results back into the meeting; Jitsi hands them
+  // to every participant as messages from "transcriber". Shown in a separate
+  // element so frequent updates never re-render (and steal focus from) the
+  // notes UI above. Works for everyone in the meeting, signed in or not.
+  var CAPTION_PREF = 'synascriber.captions'
+  var CAPTION_HOLD_MS = 7000
+  var CAPTION_LINES = 2
+  var CAPTION_CHARS = 160
+  var CAPTION_CHARS_NARROW = 70
+  var captions = { on: captionPref(), lines: [], conference: null, seen: false, timer: null, order: 0 }
+  var captionHost = document.createElement('div')
+  captionHost.id = 'synascriber-captions'
+  var captionShadow = captionHost.attachShadow({ mode: 'open' })
+  var CAPTION_STYLE = [
+    ':host{all:initial}',
+    '.cc{position:fixed;left:50%;transform:translateX(-50%);z-index:2147482999;width:min(640px,calc(100vw - 24px));box-sizing:border-box;padding:8px 36px 8px 12px;border-radius:10px;background:rgba(0,0,0,.75);color:#fff;font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;pointer-events:none}',
+    '.line{margin:2px 0;overflow-wrap:anywhere}',
+    '.who{font-weight:600;color:#c9b8ff;margin-right:6px}',
+    '.pending{color:#d8d8d8}',
+    '.hide{pointer-events:auto;position:absolute;top:6px;right:6px;width:24px;height:24px;border:0;border-radius:6px;background:transparent;color:#fff;font:16px/24px system-ui,sans-serif;cursor:pointer}',
+    '.hide:hover,.hide:focus-visible{background:rgba(255,255,255,.18);outline:none}',
+    '@media (max-width:480px){.cc{font-size:14px}}',
+  ].join('')
+
+  function captionPref() {
+    try {
+      return localStorage.getItem(CAPTION_PREF) !== 'off'
+    } catch (e) {
+      return true
+    }
+  }
+
+  function setCaptions(on) {
+    captions.on = on
+    try {
+      localStorage.setItem(CAPTION_PREF, on ? 'on' : 'off')
+    } catch (e) { /* private mode: keep it for this page */ }
+    renderCaptions()
+    render()
+  }
+
+  function speakerName(endpoint, participant) {
+    try {
+      if (endpoint && window.APP && APP.conference && endpoint === APP.conference.getMyUserId()) {
+        return t('you')
+      }
+    } catch (e) { /* not joined */ }
+    if (participant && participant.name) {
+      return participant.name
+    }
+    try {
+      var name = APP.conference.getParticipantDisplayName && APP.conference.getParticipantDisplayName(endpoint)
+      if (name) {
+        return name
+      }
+      var remote = APP.store.getState()['features/base/participants'].remote
+      var entry = remote && remote.get && remote.get(endpoint)
+      if (entry && entry.name) {
+        return entry.name
+      }
+    } catch (e) { /* roster not available */ }
+    return t('someone')
+  }
+
+  function onTranscript(from, message) {
+    if (!message || message.type !== 'transcription-result' || !message.transcript || !message.transcript[0]) {
+      return
+    }
+    var text = String(message.transcript[0].text || '').replace(/\s+/g, ' ').trim()
+    var endpoint = String((message.participant && message.participant.id) || '').split('-')[0]
+    var id = String(message.message_id || '')
+    var line = null
+    for (var i = captions.lines.length - 1; i >= 0; i--) {
+      if (captions.lines[i].endpoint === endpoint) {
+        line = captions.lines[i]
+        break
+      }
+    }
+    if (!line || Date.now() - line.at > CAPTION_HOLD_MS) {
+      if (!text) {
+        return
+      }
+      line = { endpoint: endpoint, done: '', pending: null, at: 0 }
+      captions.lines.push(line)
+    }
+    line.name = speakerName(endpoint, message.participant)
+    if (message.is_interim) {
+      line.pending = { id: id, text: text }
+    } else {
+      if (line.pending && line.pending.id === id) {
+        line.pending = null
+      }
+      line.done = (line.done + ' ' + text).trim()
+    }
+    line.at = Date.now()
+    line.order = ++captions.order
+    captions.lines = captions.lines.filter(function (l) { return l === line || Date.now() - l.at <= CAPTION_HOLD_MS })
+    captions.lines.sort(function (a, b) { return a.order - b.order })
+    captions.lines = captions.lines.slice(-CAPTION_LINES)
+    if (!captions.seen) {
+      captions.seen = true
+      render()
+    }
+    renderCaptions()
+  }
+
+  function tail(text) {
+    var limit = window.innerWidth < 480 ? CAPTION_CHARS_NARROW : CAPTION_CHARS
+    if (text.length <= limit) {
+      return text
+    }
+    var cut = text.slice(-limit)
+    var space = cut.indexOf(' ')
+    return '…' + (space > 0 && space < 30 ? cut.slice(space + 1) : cut)
+  }
+
+  // Above Jitsi's toolbar and the speaker name on the stage, whichever is higher.
+  function captionBottom() {
+    var bottom = 24
+    ;['.toolbox-content-items', '.toolbox-content', '#largeVideoContainer [class*="badgeContainer"]', '.stage-participant-label'].forEach(function (selector) {
+      var node = document.querySelector(selector)
+      var rect = node && node.getBoundingClientRect()
+      if (rect && rect.height > 0 && rect.top < window.innerHeight) {
+        bottom = Math.max(bottom, Math.round(window.innerHeight - rect.top + 10))
+      }
+    })
+    return bottom
+  }
+
+  function renderCaptions() {
+    captionShadow.innerHTML = ''
+    captionShadow.appendChild(el('style', { text: CAPTION_STYLE }))
+    var now = Date.now()
+    var lines = captions.lines.filter(function (l) { return now - l.at <= CAPTION_HOLD_MS && (l.done || l.pending) })
+    if (!captions.on || lines.length === 0) {
+      clearInterval(captions.timer)
+      captions.timer = null
+      return
+    }
+    var box = el('div', { class: 'cc', role: 'log', 'aria-live': 'polite', 'aria-label': t('captions_region') })
+    box.style.bottom = captionBottom() + 'px'
+    lines.forEach(function (l) {
+      var full = (l.done + (l.pending ? ' ' + l.pending.text : '')).trim()
+      var shown = tail(full)
+      var doneShown = shown.slice(0, Math.max(0, shown.length - (l.pending ? l.pending.text.length : 0)))
+      box.appendChild(el('div', { class: 'line' }, [
+        el('span', { class: 'who', text: l.name + ':' }),
+        el('span', { text: l.pending ? doneShown : shown }),
+        l.pending ? el('span', { class: 'pending', 'aria-hidden': 'true', text: shown.slice(doneShown.length) }) : null,
+      ]))
+    })
+    box.appendChild(el('button', { class: 'hide', type: 'button', 'aria-label': t('captions_hide'), title: t('captions_hide'), text: '×', onclick: function () { setCaptions(false) } }))
+    captionShadow.appendChild(box)
+    if (!captions.timer) {
+      captions.timer = setInterval(renderCaptions, 1000)
+    }
+  }
+
+  function captionToggle() {
+    return el('button', { class: 'pill', type: 'button', 'aria-pressed': String(captions.on), onclick: function () { setCaptions(!captions.on) } }, [
+      el('span', { text: t(captions.on ? 'captions_on' : 'captions_off') }),
+    ])
+  }
+
+  // Jitsi replaces the conference object on reconnects; re-attach when it does.
+  function attachCaptions() {
+    var conference = null
+    try {
+      conference = (APP.store.getState()['features/base/conference'] || {}).conference || APP.conference._room
+    } catch (e) { /* not joined */ }
+    if (!conference || conference === captions.conference || typeof conference.on !== 'function') {
+      return
+    }
+    captions.conference = conference
+    var events = window.JitsiMeetJS && JitsiMeetJS.events && JitsiMeetJS.events.conference
+    conference.on((events && events.NON_PARTICIPANT_MESSAGE_RECEIVED) || 'conference.non_participant_message_received', onTranscript)
   }
 
   // ---------------------------------------------------------------- boot
@@ -594,15 +783,23 @@
     }
     room = name
     document.body.appendChild(host)
+    document.body.appendChild(captionHost)
+    attachCaptions()
     view.state = 'connecting'
     render()
     refresh(false)
     pollTimer = setInterval(function () {
+      attachCaptions()
       if (view.signedIn) {
         refresh(false)
       }
     }, POLL_MS)
-    window.addEventListener('beforeunload', function () { clearInterval(pollTimer) })
+    var attachTimer = setInterval(attachCaptions, 5000)
+    window.addEventListener('beforeunload', function () {
+      clearInterval(pollTimer)
+      clearInterval(attachTimer)
+      clearInterval(captions.timer)
+    })
   }
 
   if (document.readyState === 'loading') {
