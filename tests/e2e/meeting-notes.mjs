@@ -166,6 +166,15 @@ log('A', 'floating button visible')
 await a.page.screenshot({ path: `${OUT}/1-button.png` })
 
 const b = await participant('B', need('SYN_USER2'), need('SYN_PASS2'), need('SYN_AUDIO2'), { noLoader: B_NO_LOADER })
+// Every caption message B's Jitsi receives, interim and final, with its arrival time.
+await b.page.evaluate(() => {
+  window.__caps = []
+  APP.conference._room.on('conference.non_participant_message_received', (from, message) => {
+    if (message?.type === 'transcription-result') {
+      window.__caps.push({ t: Date.now(), interim: message.is_interim === true, id: message.message_id, text: message.transcript?.[0]?.text || '' })
+    }
+  })
+})
 
 await notes(a.page).getByRole('button', { name: L.button, exact: true }).click()
 await notes(a.page).getByRole('dialog').waitFor()
@@ -175,6 +184,7 @@ await notes(a.page).getByRole('button', { name: L.start }).click()
 log('A', 'start clicked (meeting language: Deutsch)')
 
 await waitForText(a.page, L.running, 45000, 'running-for-starter')
+const runningAt = Date.now()
 log('A', 'notes running')
 await a.page.screenshot({ path: `${OUT}/3-running-starter.png` })
 if (!B_NO_LOADER) {
@@ -202,6 +212,22 @@ if (!B_NO_LOADER) {
   log('B', 'switched captions off and on again')
 }
 await a.page.waitForTimeout(Math.max(0, talkUntil - Date.now()))
+
+const caps = await b.page.evaluate(() => window.__caps)
+const interim = caps.filter((c) => c.interim)
+const firstMs = caps.length ? caps[0].t - runningAt : null
+const grow = Object.values(caps.reduce((lines, c) => {
+  const line = lines[c.id] || (lines[c.id] = { first: c.t, final: null })
+  if (!c.interim) line.final = c.t
+  return lines
+}, {})).filter((line) => line.final !== null).map((line) => line.final - line.first)
+log('B', `captions: ${caps.length} messages (${interim.length} interim, ${caps.length - interim.length} final); first ${firstMs === null ? '-' : (firstMs / 1000).toFixed(1)} s after start; a line grows ${grow.length ? (grow.reduce((a, b) => a + b, 0) / grow.length / 1000).toFixed(1) : '-'} s on average before it is final`)
+if (interim.length === 0) {
+  throw new Error('no interim captions arrived: the line does not grow while someone speaks')
+}
+if (firstMs === null || firstMs > 8000) {
+  throw new Error(`first caption ${firstMs} ms after start (expected within 8 s)`)
+}
 
 await notes(a.page).getByRole('button', { name: L.stop }).click()
 log('A', 'stop clicked')
