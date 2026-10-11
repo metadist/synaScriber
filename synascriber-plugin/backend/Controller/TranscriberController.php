@@ -10,6 +10,7 @@ use Plugin\SynaScriber\Service\SessionException;
 use Plugin\SynaScriber\Service\SessionService;
 use Plugin\SynaScriber\Service\Settings;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
+use Symfony\Component\HttpFoundation\Exception\JsonException;
 use Symfony\Component\HttpFoundation\File\UploadedFile;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -111,6 +112,7 @@ final class TranscriberController extends AbstractController
         new OA\Property(property: 'language', type: 'string'),
         new OA\Property(property: 'dropped', type: 'string', nullable: true, enum: ['no_speech', 'hallucination']),
         new OA\Property(property: 'speechEndMs', type: 'integer', nullable: true, description: 'Where the last speech ends, ms from the window start'),
+        new OA\Property(property: 'segmentEndsMs', type: 'array', items: new OA\Items(type: 'integer'), description: 'Where each recognised phrase ends, ms from the window start, ascending'),
     ]))]
     #[OA\Response(response: 403, description: 'Live captions are switched off')]
     #[OA\Response(response: 409, description: 'Session is not running')]
@@ -145,7 +147,7 @@ final class TranscriberController extends AbstractController
             $this->sessions->event($ref, $request->toArray());
         } catch (SessionException $e) {
             return $this->error($e);
-        } catch (\JsonException) {
+        } catch (JsonException) {
             return $this->json(['error' => 'invalid_event', 'message' => 'The event is not valid JSON.'], 422);
         }
 

@@ -228,7 +228,14 @@ final readonly class SessionService
         $this->assertWindow($window);
         $result = $this->whisper->recognize($window['audio'], (string) $session['language']);
 
-        return ['seq' => $window['seq'], 'text' => $result['text'], 'language' => $session['language'], 'dropped' => $result['dropped'], 'speechEndMs' => $result['speechEndMs']];
+        return [
+            'seq' => $window['seq'],
+            'text' => $result['text'],
+            'language' => $session['language'],
+            'dropped' => $result['dropped'],
+            'speechEndMs' => $result['speechEndMs'],
+            'segmentEndsMs' => $result['segmentEndsMs'],
+        ];
     }
 
     /**
