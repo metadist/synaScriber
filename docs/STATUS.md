@@ -20,7 +20,7 @@ here, not a chat message.
 | `MN-9` v1.0 release | not started | |
 | `MN-10` v1.1 | not started | |
 | `MN-11` v1.2 | not started | |
-| `MN-12` openDesk packaging | not started | |
+| `MN-12` openDesk packaging | **installer on standard openDesk** | `deploy/opendesk/`: `./synascriber check/plan/install/verify/opendesk-env/uninstall`, chart `synascriber`, Synaplan from synaplan-charts `deployments/opendesk-addon`. Journey green on openDesk v1.19.1 + Synaplan 5.3.2 (2026-10-12). Open: published images (`synaplan-stt`, transcriber), openDesk merge request. |
 
 ## Decisions
 
@@ -30,6 +30,63 @@ here, not a chat message.
 | 2026-10-05 | Product owner: transcripts land for **all participants** in their Generated overview; pushing to OpenCloud / Nextcloud comes from there in a later release. D6 and D12 rewritten accordingly. |
 
 ## Log
+
+**2026-10-12 — One installer for a standard openDesk (`MN-12`).** The dev
+cluster was rebuilt from upstream openDesk **v1.19.1** (Jitsi chart 3.12.4,
+images `stable-11248`; Nubus, Jitsi, Element, Collabora, Nextcloud) instead
+of the edition used so far. On top of it, from a clean namespace, one
+command installs everything:
+
+```bash
+cd deploy/opendesk && ./synascriber install
+```
+
+What it does, in order: Helm releases (synaplan-charts
+`deployments/opendesk-addon`: MariaDB 11.8 for Synaplan, generated secrets,
+Synaplan 5.3.2; this repo's chart `synascriber`: plugin files, transcriber
+from a pinned synaplan commit, Prosody module), the Keycloak clients
+`synaplan` and `synascriber`, the plugin for Synaplan's first local
+administrator with the transcriber's API key and the settings, and openDesk's
+Jitsi (`helm upgrade` of the deployed chart version: `head.html`, the silent
+page, `mod_synascriber`, `custom-jicofo.conf`). It ends with `verify`.
+
+| Run | Result |
+|-----|--------|
+| `check` on the fresh openDesk | found namespace, domain, Keycloak, Jitsi chart 3.12.4, ingress class, certificate issuer, Collabora by itself |
+| first `install` | Synaplan ready in about 1 minute; every `verify` check green |
+| journey (`tests/e2e/meeting-notes.mjs`, two people, 50 s German speech) | button 0.8 s after joining; banner and Jitsi's indicator at the second person at once; first caption after 2.4 s, 72 caption messages; both copies in Sources › Generated, correct speakers and text |
+| `install` again | no Helm release changed, Jitsi "already current" (idempotent) |
+| `uninstall`, then `install` | Jitsi back to openDesk's own values, Synaplan stays; reinstall green; journey again green (first caption after 1.4 s) |
+| openDesk's own `helmfile apply` for `jitsi` with the generated `synascriber.yaml.gotmpl` in the environment | empty diff: openDesk renders exactly what the installer applied |
+
+Found on the way:
+
+- **openDesk removes unknown Keycloak clients.** Its bootstrap (`kcom`)
+  deletes every client not declared in openDesk's values and recreates
+  `functional.authentication.oidc.clients` on every run. The installer
+  therefore writes `synascriber.yaml.gotmpl` (both clients, with the client
+  secret as `existingSecret`, and the Jitsi values through
+  `customization.release.jitsi`). After a bootstrap run the recreated clients
+  match the installer's definition field by field; `verify` reports whether
+  the file is in place.
+- **Synaplan 5.3 needs `TIKA_BASE_URL`.** It is read without a default; the
+  synaplan chart only set it with Tika on, so every request failed with
+  Tika off. Fixed in the chart (always set, empty = off).
+- **Jicofo reads the bridge token from a Secret.** `custom-jicofo.conf` uses
+  HOCON `${?SYNASCRIBER_TRANSCRIBER_TOKEN}` from `extraEnvFrom`, so no secret
+  sits in a ConfigMap or in the openDesk files. All references are optional,
+  so Jitsi still starts if the settings outlive an uninstall.
+- **Chart 3.12.4 has a proper Jicofo hook** (`jicofo.custom.configs`); the
+  start-script workaround is only used for older charts.
+- openDesk 1.19's LDAP leader elector (Python 3.13, strict X.509) rejects a
+  cluster CA that has an extended key usage and no authority key identifier;
+  the dev cluster pins the previous elector image. Not a synaScriber issue,
+  noted for others on such clusters.
+
+Open: Jitsi `stable-11248` shows its own toast "Transcription started · Also
+record this meeting?" when notes start (offers recording although Jibri is
+off). `STT=cpu|gpu` waits for the first `synaplan-stt` image; the transcriber
+runs from source until its image is published (`MN-1c`).
 
 **2026-10-11 — Step-by-step live captions; plugin on the transcriber
 session API.** The dev cluster ran a transcriber copy that existed in no repository

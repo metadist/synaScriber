@@ -1,0 +1,35 @@
+# Values for the synascriber chart. The installer (../synascriber) sets them;
+# you only need this file to run the chart by hand.
+
+# -- Synaplan inside the cluster (the transcriber posts audio windows here)
+synaplanInternalUrl: "http://synaplan"
+
+# Secrets are generated on first install and kept on every upgrade.
+secrets:
+  # -- Secret with prosody-secret, transcriber-token and api-key
+  name: synascriber
+
+transcriber:
+  # -- Meeting language the transcriber assumes until a session says otherwise
+  language: de
+  # -- Live caption preview interval per speaker while they talk (ms). 0 = one caption per audio window.
+  previewEveryMs: 1500
+  # -- Longest audio window (ms); windows usually end earlier, at a pause
+  commitAfterMs: 8000
+  # -- A published transcriber image. Empty = run the source of
+  # metadist/synaplan at `source.ref` on the Node image below.
+  image: ""
+  node:
+    # -- Node image for running the transcriber from source
+    image: "docker.io/library/node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402"
+  source:
+    # -- Commit of github.com/metadist/synaplan whose sidecars/synaplan-transcriber runs
+    ref: "09d72d35bf5740b6cdf7a293a77e44efcf177833"
+    # -- Tarball URL; {ref} is replaced
+    url: "https://codeload.github.com/metadist/synaplan/tar.gz/{ref}"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      memory: 512Mi

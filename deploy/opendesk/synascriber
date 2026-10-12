@@ -1,0 +1,1392 @@
+#!/usr/bin/env python3
+"""synaScriber for openDesk: meeting notes in an openDesk you already run.
+
+  ./synascriber check         what is in your cluster and what would be installed
+  ./synascriber plan          preview of every change
+  ./synascriber install       install or update Synaplan and meeting notes
+  ./synascriber verify        test every piece end to end
+  ./synascriber opendesk-env  write the files that keep it through openDesk updates
+  ./synascriber uninstall     remove meeting notes (--all: Synaplan as well)
+
+check, plan, verify and opendesk-env change nothing in the cluster.
+
+Options:
+  --env FILE   settings file (default: synascriber.env next to this script)
+  --yes        do not ask before restarting Jitsi or removing things
+
+Settings: copy synascriber.env.example to synascriber.env. Tools: kubectl,
+Helm 3, helmfile, the helm-diff plugin, git, python3 (what openDesk needs).
+"""
+import argparse
+import base64
+import hashlib
+import json
+import os
+import pathlib
+import re
+import shutil
+import ssl
+import subprocess
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+HERE = pathlib.Path(__file__).resolve().parent
+REPO = HERE.parent.parent
+# Generated files live outside the checkout, so they never end up in git.
+STATE_ROOT = pathlib.Path(os.environ.get("SYNASCRIBER_STATE")
+                          or pathlib.Path(os.environ.get("XDG_STATE_HOME") or pathlib.Path.home() / ".local" / "state") / "synascriber")
+PLUGIN_DIR = REPO / "synascriber-plugin"
+PROSODY_MODULE = REPO / "prosody" / "mod_synascriber.lua"
+SILENT_PAGE = REPO / "jitsi" / "static" / "synascriber-silent.html"
+
+JITSI_CHART = "oci://registry.opencode.de/bmi/opendesk/components/platform-development/charts/opendesk-jitsi/opendesk-jitsi"
+STT_IMAGE = "ghcr.io/metadist/synaplan-stt"
+SILENT_PATH = "/static/synascriber-silent.html"
+HEAD_FILE = "/usr/share/jitsi-meet/head.html"
+SILENT_FILE = "/usr/share/jitsi-meet" + SILENT_PATH
+MODULE_MOUNT = "/prosody-plugins-custom/mod_synascriber.lua"
+JICOFO_DEFAULTS = "/defaults/synascriber-jicofo.conf"
+JICOFO_INIT = "/etc/cont-init.d/20-synascriber"
+PLUGIN_MOUNT = "/plugins/synascriber"
+WEB_POD_SELECTOR = "app.kubernetes.io/instance=synaplan,app.kubernetes.io/name=synaplan,!app.kubernetes.io/component"
+
+DEFAULTS = {
+    "KUBE_CONTEXT": "",
+    "OPENDESK_NAMESPACE": "",
+    "STT": "cpu",
+    "STT_URL": "",
+    "OLLAMA_URL": "",
+    "NOTES_LANGUAGES": "de,en",
+    "NOTES_DEFAULT_LANGUAGE": "de",
+    "NOTES_FOLDER": "Meetings",
+    "NOTES_TIMEZONE": "Europe/Berlin",
+    "LIVE_CAPTIONS": "auto",
+    "SYNAPLAN_HOST": "synaplan",
+    "SYNAPLAN_VERSION": "5.3.2",
+    "PLUGIN_OWNER_EMAIL": "",
+    "HELM": "helm",
+    "HELMFILE": "helmfile",
+    "SYNAPLAN_CHARTS_PATH": "",
+    "JITSI_CHART": JITSI_CHART,
+    "INGRESS_CLASS": "",
+    "TLS_SECRET": "",
+    "CERT_ISSUER": "",
+    "CERT_ISSUER_KIND": "",
+    "CA_SECRET": "",
+    "COLLABORA_URL": "",
+}
+
+# ------------------------------------------------------------------ output
+
+
+def say(text):
+    print(f"\n\033[1m== {text}\033[0m", flush=True)
+
+
+def ok(text):
+    print(f"   ok    {text}", flush=True)
+
+
+def note(text):
+    print(f"   ..    {text}", flush=True)
+
+
+def warn(text):
+    print(f"   \033[33mwarn\033[0m  {text}", flush=True)
+
+
+class Stop(Exception):
+    """A problem the person can fix; message and hint are shown, no traceback."""
+
+    def __init__(self, message, hint=""):
+        super().__init__(message)
+        self.hint = hint
+
+
+def ask(question, assume_yes):
+    if assume_yes:
+        return True
+    if not sys.stdin.isatty():
+        raise Stop(f"{question} (no terminal to ask)", "Run again with --yes.")
+    return input(f"   ??    {question} [y/N] ").strip().lower() in ("y", "yes", "j", "ja")
+
+
+# ------------------------------------------------------------------ settings
+
+
+def load_settings(path):
+    cfg = dict(DEFAULTS)
+    if path.is_file():
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                raise Stop(f"{path}:{number}: expected KEY=value, got {line!r}")
+            key, value = line.split("=", 1)
+            key, value = key.strip().removeprefix("export ").strip(), value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+                value = value[1:-1]
+            if key not in DEFAULTS:
+                raise Stop(f"{path}:{number}: unknown setting {key}", "See synascriber.env.example for the list.")
+            cfg[key] = value
+    for key in DEFAULTS:
+        if os.environ.get(f"SYNASCRIBER_{key}"):
+            cfg[key] = os.environ[f"SYNASCRIBER_{key}"]
+    cfg["STT"] = cfg["STT"].lower()
+    if cfg["STT"] not in ("cpu", "gpu", "url"):
+        raise Stop(f"STT must be cpu, gpu or url, not {cfg['STT']!r}")
+    if cfg["STT"] == "url" and not cfg["STT_URL"]:
+        raise Stop("STT=url needs STT_URL (your speech-to-text server, e.g. http://whisper.example:8080)")
+    languages = [x.strip() for x in cfg["NOTES_LANGUAGES"].split(",") if x.strip()]
+    if cfg["NOTES_DEFAULT_LANGUAGE"] not in languages:
+        raise Stop(f"NOTES_DEFAULT_LANGUAGE {cfg['NOTES_DEFAULT_LANGUAGE']} is not in NOTES_LANGUAGES {cfg['NOTES_LANGUAGES']}")
+    return cfg
+
+
+# ------------------------------------------------------------------ commands
+
+
+class Shell:
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.context = cfg["KUBE_CONTEXT"]
+
+    def run(self, args, check=True, input_text=None, capture=True, env=None):
+        try:
+            result = subprocess.run(args, input=input_text, text=True, capture_output=capture,
+                                    env=dict(os.environ, **(env or {})))
+        except FileNotFoundError:
+            raise Stop(f"{args[0]} is not installed or not on PATH")
+        if check and result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip() if capture else ""
+            raise Stop(f"{' '.join(args[:4])} … failed (exit {result.returncode})", detail[-1500:])
+        return result
+
+    def kubectl(self, *args, ns=None, **kw):
+        base = ["kubectl"] + (["--context", self.context] if self.context else []) + (["-n", ns] if ns else [])
+        return self.run(base + list(args), **kw)
+
+    def kjson(self, *args, ns=None):
+        result = self.kubectl(*args, "-o", "json", ns=ns, check=False)
+        return json.loads(result.stdout) if result.returncode == 0 and result.stdout.strip() else None
+
+    def helm(self, *args, ns=None, **kw):
+        base = [self.cfg["HELM"]] + (["--kube-context", self.context] if self.context else []) + (["-n", ns] if ns else [])
+        return self.run(base + list(args), **kw)
+
+
+# ------------------------------------------------------------------ discovery
+
+
+def check_tools(sh):
+    say("tools")
+    for tool in ("kubectl", sh.cfg["HELM"], sh.cfg["HELMFILE"], "git"):
+        if not shutil.which(tool):
+            raise Stop(f"{tool} not found", "Install it (openDesk needs the same tools), or set HELM / HELMFILE in synascriber.env.")
+    version = sh.run([sh.cfg["HELM"], "version", "--short"]).stdout.strip()
+    if not version.startswith("v3."):
+        raise Stop(f"{sh.cfg['HELM']} is Helm {version}; openDesk and this installer need Helm 3",
+                   "Install Helm 3 next to Helm 4 and set HELM=/path/to/helm3 in synascriber.env.")
+    plugins = sh.run([sh.cfg["HELM"], "plugin", "list"]).stdout
+    if not re.search(r"^diff\s", plugins, re.M):
+        raise Stop("the helm-diff plugin is missing", f"{sh.cfg['HELM']} plugin install https://github.com/databus23/helm-diff")
+    ok(f"kubectl, {version}, helm-diff, {sh.run([sh.cfg['HELMFILE'], '--version']).stdout.split()[-1]}, git")
+
+
+def b64(data, key):
+    return base64.b64decode(((data or {}).get("data") or {}).get(key, "")).decode() if data else ""
+
+
+def dig(data, *keys, default=None):
+    for key in keys:
+        if not isinstance(data, dict) or key not in data:
+            return default
+        data = data[key]
+    return data
+
+
+def discover(sh):
+    """Find openDesk and everything the add-on needs from it."""
+    cfg = sh.cfg
+    say("openDesk in your cluster")
+    if not sh.context:
+        sh.context = sh.kubectl("config", "current-context").stdout.strip()
+    nodes = sh.kubectl("get", "nodes", "-o", "name", check=False)
+    if nodes.returncode != 0:
+        raise Stop(f"cluster not reachable with kube context {sh.context}", nodes.stderr.strip())
+    ok(f"kube context {sh.context} ({len(nodes.stdout.split())} nodes)")
+
+    releases = json.loads(sh.helm("list", "-A", "-a", "-o", "json").stdout or "[]")
+    jitsis = [r for r in releases if r["chart"].startswith("opendesk-jitsi-")
+              and (not cfg["OPENDESK_NAMESPACE"] or r["namespace"] == cfg["OPENDESK_NAMESPACE"])]
+    if not jitsis:
+        raise Stop("no openDesk Jitsi found (a Helm release with chart opendesk-jitsi)",
+                   "Is openDesk installed with Jitsi? Set OPENDESK_NAMESPACE if Helm cannot list other namespaces.")
+    if len(jitsis) > 1:
+        raise Stop("more than one openDesk found: " + ", ".join(r["namespace"] for r in jitsis), "Set OPENDESK_NAMESPACE.")
+    jitsi = jitsis[0]
+    ns = jitsi["namespace"]
+    if jitsi["status"] != "deployed":
+        raise Stop(f"openDesk Jitsi in {ns} is {jitsi['status']}", "Fix openDesk first; this installer adds to a working openDesk.")
+    values = json.loads(sh.helm("get", "values", jitsi["name"], "-o", "json", ns=ns).stdout or "{}")
+    domain = dig(values, "global", "domain")
+    if not domain:
+        raise Stop(f"Jitsi release {jitsi['name']} has no global.domain", "Is it really openDesk's Jitsi?")
+    hosts = dig(values, "global", "hosts", default={}) or {}
+    t = {
+        "context": sh.context,
+        "namespace": ns,
+        "domain": domain,
+        "jitsiRelease": jitsi["name"],
+        "jitsiChartVersion": jitsi["chart"].removeprefix("opendesk-jitsi-"),
+        "jitsiValues": values,
+        "jitsiHost": f"{hosts.get('jitsi', 'meet')}.{domain}",
+        "keycloakHost": hosts.get("keycloak", "id"),
+        "realm": dig(values, "settings", "keycloakRealm", default="opendesk"),
+        "clusterDomain": dig(values, "jitsi", "global", "clusterDomain", default="cluster.local"),
+        "releases": {r["name"]: r for r in releases if r["namespace"] == ns},
+    }
+    t["keycloakUrl"] = f"https://{t['keycloakHost']}.{domain}"
+    t["issuer"] = f"{t['keycloakUrl']}/realms/{t['realm']}"
+    t["synaplanHost"] = f"{cfg['SYNAPLAN_HOST']}.{domain}"
+    t["synaplanUrl"] = f"https://{t['synaplanHost']}"
+    ok(f"openDesk in namespace {ns}, domain {domain}, Jitsi chart {t['jitsiChartVersion']}")
+
+    ingress = dig(values, "jitsi", "web", "ingress", default={}) or {}
+    t["ingressClass"] = cfg["INGRESS_CLASS"] or ingress.get("ingressClassName") or "haproxy"
+    tls_secret = ((ingress.get("tls") or [{}])[0] or {}).get("secretName") or "opendesk-certificates-tls"
+    t["tls"] = tls_settings(sh, ns, domain, tls_secret)
+    ok(f"ingress class {t['ingressClass']}; certificate: " + (
+        f"reuse {t['tls']['secretName']}" if t["tls"]["secretName"]
+        else f"cert-manager {t['tls']['issuerKind']} {t['tls']['issuerName']} issues synaplan-tls")
+        + (f"; private CA from {t['tls']['caSecretName']}" if t["tls"]["caSecretName"] else ""))
+
+    services = {s["metadata"]["name"]: s for s in (sh.kjson("get", "services", ns=ns) or {}).get("items", [])}
+    t["prosodyService"] = f"{jitsi['name']}-prosody"
+    if t["prosodyService"] not in services:
+        raise Stop(f"Service {t['prosodyService']} not found in {ns}", "openDesk's Jitsi looks different than expected.")
+    t["prosodyUrl"] = f"http://{t['prosodyService']}.{ns}.svc.{t['clusterDomain']}:5280"
+    t["keycloakService"] = "ums-keycloak" if "ums-keycloak" in services else ""
+    if not t["keycloakService"]:
+        raise Stop(f"openDesk's Keycloak (Service ums-keycloak) not found in {ns}")
+
+    collabora = cfg["COLLABORA_URL"]
+    if collabora.lower() == "off":
+        collabora = ""
+    elif not collabora:
+        for name, svc in services.items():
+            ports = [p.get("port") for p in svc["spec"].get("ports", [])]
+            if "collabora" in name and 9980 in ports:
+                collabora = f"http://{name}.{ns}.svc.{t['clusterDomain']}:9980"
+                break
+    t["collaboraUrl"] = collabora
+    ok(f"Collabora for Office previews: {collabora or 'not found, previews off'}")
+
+    t["synaplanInstalled"] = "synaplan" in t["releases"]
+    t["synaplanOurs"] = "synaplan-resources" in t["releases"]
+    if t["synaplanInstalled"] and not t["synaplanOurs"]:
+        raise Stop(f"a Synaplan is already installed in {ns}, but not by this add-on",
+                   "This version installs its own Synaplan. Adding meeting notes to an existing Synaplan is not supported yet.")
+    ok("Synaplan: " + ("installed by this add-on, will be updated" if t["synaplanInstalled"] else "not installed yet, will be added"))
+    return t
+
+
+def tls_settings(sh, ns, domain, secret_name):
+    cfg = sh.cfg
+    tls = {"secretName": "", "issuerKind": "ClusterIssuer", "issuerName": "letsencrypt-prod", "caSecretName": cfg["CA_SECRET"]}
+    if cfg["TLS_SECRET"]:
+        tls["secretName"] = cfg["TLS_SECRET"]
+        return tls
+    certs = (sh.kjson("get", "certificates.cert-manager.io", ns=ns) or {}).get("items", [])
+    cert = next((c for c in certs if dig(c, "spec", "secretName") == secret_name), None)
+    if cert:
+        names = dig(cert, "spec", "dnsNames", default=[]) or []
+        issuer = dig(cert, "spec", "issuerRef", default={}) or {}
+        tls["issuerKind"] = issuer.get("kind", "Issuer")
+        tls["issuerName"] = issuer.get("name", "")
+        if f"*.{domain}" in names:
+            tls["secretName"] = secret_name
+        if not tls["caSecretName"]:
+            kind = "clusterissuers.cert-manager.io" if tls["issuerKind"] == "ClusterIssuer" else "issuers.cert-manager.io"
+            issuer_obj = sh.kjson("get", kind, tls["issuerName"], ns=None if tls["issuerKind"] == "ClusterIssuer" else ns)
+            ca_secret = dig(issuer_obj or {}, "spec", "ca", "secretName")
+            if ca_secret:
+                tls["caSecretName"] = ca_secret
+    if cfg["CERT_ISSUER"]:
+        tls["issuerName"] = cfg["CERT_ISSUER"]
+        tls["issuerKind"] = cfg["CERT_ISSUER_KIND"] or "ClusterIssuer"
+    if not tls["secretName"] and not tls["issuerName"]:
+        raise Stop("cannot tell how synaplan.<domain> gets a certificate",
+                   "Set TLS_SECRET (a wildcard certificate Secret) or CERT_ISSUER (a cert-manager issuer) in synascriber.env.")
+    return tls
+
+
+def check_stt(sh, t):
+    cfg = sh.cfg
+    say("speech-to-text")
+    if cfg["STT"] == "url":
+        ok(f"your server {cfg['STT_URL']} (tested from inside the cluster during install)")
+        return
+    tag = stt_chart_app_version(sh)
+    variant = "cuda" if cfg["STT"] == "gpu" else "cpu"
+    image = f"{STT_IMAGE}:{tag}-{variant}"
+    if not ghcr_tag_exists(STT_IMAGE.removeprefix("ghcr.io/"), f"{tag}-{variant}"):
+        raise Stop(f"the speech-to-text image {image} is not published yet",
+                   "Use STT=url with a Whisper server you run (README: 'Speech-to-text'), or wait for the release.")
+    if cfg["STT"] == "gpu":
+        nodes = (sh.kjson("get", "nodes") or {}).get("items", [])
+        if not any(int(dig(n, "status", "allocatable", "nvidia.com/gpu", default="0") or 0) > 0 for n in nodes):
+            raise Stop("STT=gpu, but no node offers nvidia.com/gpu", "Install the NVIDIA GPU operator, or use STT=cpu.")
+    ok(f"{image} in the cluster ({'GPU' if cfg['STT'] == 'gpu' else 'CPU'})")
+
+
+def stt_chart_app_version(sh):
+    if sh.cfg["SYNAPLAN_CHARTS_PATH"]:
+        chart = pathlib.Path(sh.cfg["SYNAPLAN_CHARTS_PATH"]) / "charts" / "stt" / "Chart.yaml"
+        match = re.search(r'^appVersion:\s*"?([^"\s]+)', chart.read_text(), re.M) if chart.is_file() else None
+        if match:
+            return match.group(1)
+    return "0.1.0"
+
+
+def ghcr_tag_exists(repository, tag):
+    try:
+        with urllib.request.urlopen(f"https://ghcr.io/token?scope=repository:{repository}:pull", timeout=15) as r:
+            token = json.load(r).get("token", "")
+        request = urllib.request.Request(f"https://ghcr.io/v2/{repository}/manifests/{tag}", method="HEAD", headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json"})
+        with urllib.request.urlopen(request, timeout=15):
+            return True
+    except (urllib.error.URLError, ValueError):
+        return False
+
+
+# ------------------------------------------------------------------ state
+
+
+def state_dir(t):
+    path = STATE_ROOT / re.sub(r"[^A-Za-z0-9_.-]", "_", t["context"]) / t["namespace"]
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return path
+
+
+def plugin_files():
+    if not (PLUGIN_DIR / "manifest.json").is_file():
+        raise Stop(f"{PLUGIN_DIR} has no manifest.json", "Run the installer from a complete synaScriber checkout.")
+    return sorted(p.relative_to(PLUGIN_DIR).as_posix() for p in PLUGIN_DIR.rglob("*") if p.is_file())
+
+
+def digest(base, names):
+    h = hashlib.sha256()
+    for name in names:
+        h.update(name.encode())
+        h.update((base / name).read_bytes())
+    return h.hexdigest()[:16]
+
+
+def stt_url(cfg, t):
+    if cfg["STT"] == "url":
+        return cfg["STT_URL"].rstrip("/")
+    return f"http://synaplan-stt.{t['namespace']}.svc.{t['clusterDomain']}:8080"
+
+
+def preview_ms(cfg):
+    captions = cfg["LIVE_CAPTIONS"].lower()
+    if captions == "off" or (captions == "auto" and cfg["STT"] == "cpu"):
+        return 0
+    return 1500
+
+
+def write_state(sh, t, enabled=True):
+    cfg = sh.cfg
+    files = plugin_files()
+    synaplan_values = {}
+    if enabled:
+        synaplan_values = {
+            "volumes": [{"name": "synascriber-plugin", "configMap": {
+                "name": "synascriber-plugin",
+                "items": [{"key": f.replace("/", "__"), "path": f} for f in files]}}],
+            "volumeMounts": [{"name": "synascriber-plugin", "mountPath": PLUGIN_MOUNT, "readOnly": True}],
+            "podAnnotations": {"synascriber/plugin": digest(PLUGIN_DIR, files)},
+        }
+    state = {
+        "opendesk": {
+            "namespace": t["namespace"],
+            "domain": t["domain"],
+            "keycloakHost": t["keycloakHost"],
+            "realm": t["realm"],
+            "clusterDomain": t["clusterDomain"],
+            "ingressClassName": t["ingressClass"],
+            "tls": t["tls"],
+            "collaboraUrl": t["collaboraUrl"],
+        },
+        "synaplan": {
+            "host": cfg["SYNAPLAN_HOST"],
+            "image": {"tag": cfg["SYNAPLAN_VERSION"]},
+            "ai": {"ollamaUrl": cfg["OLLAMA_URL"]},
+            "bootstrapAdminEmail": cfg["PLUGIN_OWNER_EMAIL"],
+            "values": synaplan_values,
+        },
+        "stt": {"mode": "" if cfg["STT"] == "url" else cfg["STT"], "url": stt_url(cfg, t) if cfg["STT"] == "url" else ""},
+        "synascriber": {
+            "enabled": enabled,
+            "transcriber": {"language": cfg["NOTES_DEFAULT_LANGUAGE"], "previewEveryMs": preview_ms(cfg)},
+        },
+    }
+    if cfg["SYNAPLAN_CHARTS_PATH"]:
+        state["synaplanCharts"] = {"path": str(pathlib.Path(cfg["SYNAPLAN_CHARTS_PATH"]).resolve())}
+    path = state_dir(t) / "values.json"
+    path.write_text(json.dumps(state, indent=1) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+    return path
+
+
+def helmfile(sh, state, *args, check=True):
+    cmd = [sh.cfg["HELMFILE"], "--helm-binary", sh.cfg["HELM"], "--kube-context", sh.context,
+           "-f", str(HERE / "helmfile.yaml.gotmpl"), "--state-values-file", str(state)] + list(args)
+    print(f"   $ helmfile {' '.join(args)}", flush=True)
+    result = subprocess.run(cmd, text=True)
+    if check and result.returncode != 0:
+        raise Stop(f"helmfile {args[0]} failed (exit {result.returncode})", "The output above names the release and the reason.")
+    return result.returncode
+
+
+# ------------------------------------------------------------------ Keycloak
+
+
+def mapper(name, kind, **config):
+    cfg = {"id.token.claim": "true", "access.token.claim": "true", "userinfo.token.claim": "true"}
+    cfg.update({key.replace("_", "."): value for key, value in config.items()})
+    return {"name": name, "protocol": "openid-connect", "protocolMapper": kind, "consentRequired": False, "config": cfg}
+
+
+def audience(name, client_id):
+    m = mapper(name, "oidc-audience-mapper", included_client_audience=client_id)
+    m["config"]["id.token.claim"] = "false"
+    m["config"].pop("userinfo.token.claim")
+    return m
+
+
+# Nubus realms predate Keycloak's "basic" scope, so each client carries sub itself.
+SUB = mapper("sub", "oidc-usermodel-property-mapper", user_attribute="id", claim_name="sub", jsonType_label="String")
+EMAIL = mapper("email", "oidc-usermodel-property-mapper", user_attribute="email", claim_name="email", jsonType_label="String")
+FULL_NAME = mapper("full name", "oidc-full-name-mapper")
+USERNAME = mapper("username", "oidc-usermodel-property-mapper", user_attribute="username",
+                  claim_name="preferred_username", jsonType_label="String")
+GROUPS = mapper("groups", "oidc-group-membership-mapper", claim_name="groups", full_path="false")
+DEFAULT_SCOPES = ["web-origins", "acr", "profile", "roles", "email"]
+
+
+def clients(t):
+    """The two Keycloak clients: Synaplan's sign-in and the Jitsi button's silent sign-in."""
+    synaplan = t["synaplanUrl"]
+    jitsi = f"https://{t['jitsiHost']}"
+    return [
+        {"clientId": "synaplan", "name": "Synaplan", "enabled": True, "protocol": "openid-connect",
+         "publicClient": False, "clientAuthenticatorType": "client-secret",
+         "standardFlowEnabled": True, "implicitFlowEnabled": False, "directAccessGrantsEnabled": False,
+         "serviceAccountsEnabled": False, "frontchannelLogout": True, "fullScopeAllowed": True,
+         "rootUrl": synaplan, "baseUrl": synaplan,
+         "redirectUris": [f"{synaplan}/api/v1/auth/keycloak/callback"], "webOrigins": [synaplan],
+         "attributes": {"post.logout.redirect.uris": f"{synaplan}/", "use.refresh.tokens": "true"},
+         "defaultClientScopes": DEFAULT_SCOPES, "optionalClientScopes": ["offline_access"],
+         "protocolMappers": [SUB, EMAIL, FULL_NAME, USERNAME, GROUPS, audience("synaplan-audience", "synaplan")],
+         "_secret": ("synaplan-oidc-credentials", "client-secret")},
+        {"clientId": "synascriber", "name": "Meeting notes (Jitsi button)", "enabled": True, "protocol": "openid-connect",
+         "publicClient": True, "standardFlowEnabled": True, "implicitFlowEnabled": False,
+         "directAccessGrantsEnabled": False, "serviceAccountsEnabled": False, "frontchannelLogout": True,
+         "fullScopeAllowed": False, "rootUrl": jitsi, "baseUrl": jitsi,
+         "redirectUris": [jitsi + SILENT_PATH], "webOrigins": [jitsi],
+         "attributes": {"pkce.code.challenge.method": "S256", "post.logout.redirect.uris": "+"},
+         "defaultClientScopes": DEFAULT_SCOPES, "optionalClientScopes": [],
+         "protocolMappers": [SUB, EMAIL, FULL_NAME, USERNAME, GROUPS, audience("synaplan-audience", "synaplan")]},
+    ]
+
+
+class PortForward:
+    def __init__(self, sh, ns, target, port):
+        self.args = ["kubectl"] + (["--context", sh.context] if sh.context else []) + [
+            "-n", ns, "port-forward", target, f":{port}"]
+
+    def __enter__(self):
+        self.proc = subprocess.Popen(self.args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        line = self.proc.stdout.readline()
+        match = re.search(r"127\.0\.0\.1:(\d+)", line)
+        if not match:
+            self.proc.kill()
+            raise Stop("kubectl port-forward to Keycloak failed", (line + self.proc.stderr.read())[-500:])
+        return int(match.group(1))
+
+    def __exit__(self, *exc):
+        self.proc.terminate()
+        self.proc.wait(timeout=10)
+
+
+def http(method, url, body=None, headers=None, form=None):
+    hdrs = dict(headers or {})
+    data = None
+    if form is not None:
+        data = urllib.parse.urlencode(form).encode()
+        hdrs["Content-Type"] = "application/x-www-form-urlencoded"
+    elif body is not None:
+        data = json.dumps(body).encode()
+        hdrs["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=data, method=method, headers=hdrs)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            raw = response.read()
+            return response.status, json.loads(raw) if raw else None
+    except urllib.error.HTTPError as error:
+        raw = error.read().decode(errors="ignore")
+        try:
+            return error.code, json.loads(raw)
+        except ValueError:
+            return error.code, raw
+
+
+class Keycloak:
+    def __init__(self, base, realm, user, password, dry):
+        self.dry = dry
+        self.admin = f"{base}/admin/realms/{realm}"
+        status, token = http("POST", f"{base}/realms/master/protocol/openid-connect/token",
+                             form={"grant_type": "password", "client_id": "admin-cli", "username": user, "password": password})
+        if status != 200:
+            raise Stop(f"Keycloak admin sign-in failed (HTTP {status})", "The Keycloak admin password in openDesk's Secret did not work.")
+        self.auth = {"Authorization": "Bearer " + token["access_token"]}
+
+    def get(self, path):
+        status, body = http("GET", self.admin + path, headers=self.auth)
+        if status != 200:
+            raise Stop(f"Keycloak GET {path} failed (HTTP {status})", str(body)[:300])
+        return body
+
+    def send(self, method, path, body, what):
+        print(f"   {'(dry) ' if self.dry else ''}{what}", flush=True)
+        if self.dry:
+            return
+        status, answer = http(method, self.admin + path, body=body, headers=self.auth)
+        if status not in (200, 201, 204):
+            raise Stop(f"Keycloak: {what} failed (HTTP {status})", str(answer)[:300])
+
+    def client(self, client_id):
+        found = self.get(f"/clients?clientId={urllib.parse.quote(client_id)}")
+        return found[0] if found else None
+
+
+def keycloak_admin(sh, ns):
+    pw = b64(sh.kjson("get", "secret", "keycloak-admin-password", ns=ns), "adminPassword")
+    if pw:
+        return "kcadmin", pw
+    raw = b64(sh.kjson("get", "secret", "opendesk-keycloak-bootstrap-admin-creds", ns=ns), "admin.yaml")
+    user = re.search(r"^username:\s*['\"]?([^'\"\n]+)", raw, re.M)
+    pw = re.search(r"^password:\s*['\"]?([^'\"\n]+)", raw, re.M)
+    if user and pw:
+        return user.group(1), pw.group(1)
+    if os.environ.get("KEYCLOAK_ADMIN_PASSWORD"):
+        return os.environ.get("KEYCLOAK_ADMIN_USER", "kcadmin"), os.environ["KEYCLOAK_ADMIN_PASSWORD"]
+    raise Stop("openDesk's Keycloak admin password not found (Secret keycloak-admin-password)",
+               "Set KEYCLOAK_ADMIN_USER and KEYCLOAK_ADMIN_PASSWORD in your shell.")
+
+
+def same(want, have):
+    if isinstance(want, dict):
+        return isinstance(have, dict) and all(same(v, have.get(k)) for k, v in want.items())
+    if isinstance(want, list):
+        return isinstance(have, list) and sorted(map(str, want)) == sorted(map(str, have))
+    return str(want).lower() == str(have).lower() if isinstance(want, bool) else want == have
+
+
+def ensure_client(kc, rep, secret):
+    rep = dict(rep)
+    mappers = rep.pop("protocolMappers")
+    default_scopes = rep.pop("defaultClientScopes")
+    optional_scopes = rep.pop("optionalClientScopes")
+    rep.pop("_secret", None)
+    if secret:
+        rep["secret"] = secret
+    cid = rep["clientId"]
+    have = kc.client(cid)
+    if have is None:
+        kc.send("POST", "/clients", dict(rep, protocolMappers=mappers, defaultClientScopes=default_scopes,
+                                         optionalClientScopes=optional_scopes), f"+ client {cid} created")
+        return
+    check = {k: v for k, v in rep.items() if k != "secret"}
+    current_secret = (kc.get(f"/clients/{have['id']}/client-secret") or {}).get("value") if secret else None
+    changed = sorted(k for k, v in check.items() if not same(v, have.get(k)))
+    if secret and secret != current_secret:
+        changed.append("secret")
+    if changed:
+        merged = dict(have, **{k: v for k, v in rep.items() if k != "attributes"})
+        merged["attributes"] = dict(have.get("attributes") or {}, **rep.get("attributes", {}))
+        merged.pop("protocolMappers", None)
+        kc.send("PUT", f"/clients/{have['id']}", merged, f"~ client {cid} updated: {', '.join(changed)}")
+    else:
+        ok(f"client {cid} unchanged")
+    existing = {m["name"]: m for m in kc.get(f"/clients/{have['id']}/protocol-mappers/models") or []}
+    for m in mappers:
+        got = existing.get(m["name"])
+        if got is None:
+            kc.send("POST", f"/clients/{have['id']}/protocol-mappers/models", m, f"+ client {cid}: mapper {m['name']}")
+        elif got["protocolMapper"] != m["protocolMapper"] or not same(m["config"], got.get("config", {})):
+            kc.send("PUT", f"/clients/{have['id']}/protocol-mappers/models/{got['id']}", dict(m, id=got["id"]),
+                    f"~ client {cid}: mapper {m['name']}")
+    scopes = {s["name"]: s["id"] for s in kc.get("/client-scopes")}
+    for kind, wanted in (("default", default_scopes), ("optional", optional_scopes)):
+        attached = {s["name"] for s in kc.get(f"/clients/{have['id']}/{kind}-client-scopes") or []}
+        for name in wanted:
+            if name in attached or name not in scopes:
+                continue
+            kc.send("PUT", f"/clients/{have['id']}/{kind}-client-scopes/{scopes[name]}", None, f"+ client {cid}: {kind} scope {name}")
+
+
+def step_keycloak(sh, t, dry=False, remove=()):
+    say("Keycloak: sign-in for Synaplan and the Jitsi button")
+    ns = t["namespace"]
+    user, password = keycloak_admin(sh, ns)
+    with PortForward(sh, ns, f"svc/{t['keycloakService']}", 8080) as port:
+        kc = Keycloak(f"http://127.0.0.1:{port}", t["realm"], user, password, dry)
+        if remove:
+            for cid in remove:
+                have = kc.client(cid)
+                if have:
+                    kc.send("DELETE", f"/clients/{have['id']}", None, f"- client {cid} removed")
+            return
+        for rep in clients(t):
+            secret = None
+            if rep.get("_secret"):
+                name, key = rep["_secret"]
+                secret = b64(sh.kjson("get", "secret", name, ns=ns), key)
+                if not secret and not dry:
+                    raise Stop(f"Secret {name} not found in {ns}", "Run the Synaplan part first (./synascriber install).")
+            ensure_client(kc, rep, secret)
+
+
+# ------------------------------------------------------------------ Synaplan plugin
+
+
+PHP_OWNER = r"""
+$p = new PDO(sprintf('mysql:host=%s;port=%s;dbname=%s;charset=utf8mb4', getenv('DB_HOST'), getenv('DB_PORT'), getenv('DB_NAME')), getenv('DB_USER'), getenv('DB_PASSWORD'));
+$s = $p->prepare('SELECT BID FROM BUSER WHERE BMAIL = ? ORDER BY BID LIMIT 1');
+$s->execute([$argv[1]]);
+$id = $s->fetchColumn();
+if (!$id) { $id = $p->query("SELECT BID FROM BUSER WHERE BUSERLEVEL = 'ADMIN' ORDER BY BID LIMIT 1")->fetchColumn(); }
+echo json_encode(['owner' => $id ? (int) $id : null]);
+"""
+
+PHP_API_KEY = r"""
+$p = new PDO(sprintf('mysql:host=%s;port=%s;dbname=%s;charset=utf8mb4', getenv('DB_HOST'), getenv('DB_PORT'), getenv('DB_NAME')), getenv('DB_USER'), getenv('DB_PASSWORD'));
+[$owner, $key] = [(int) $argv[1], trim(stream_get_line(STDIN, 256, "\n"))];
+$s = $p->prepare('SELECT BID, BOWNERID FROM BAPIKEYS WHERE BKEY = ?');
+$s->execute([$key]);
+$row = $s->fetch(PDO::FETCH_ASSOC);
+if (!$row) {
+    $p->prepare("INSERT INTO BAPIKEYS (BOWNERID, BKEY, BSTATUS, BLASTUSED, BSCOPES, BCREATED, BNAME) VALUES (?, ?, 'active', 0, '[]', UNIX_TIMESTAMP(), 'synascriber-transcriber')")->execute([$owner, $key]);
+    echo "created";
+} elseif ((int) $row['BOWNERID'] !== $owner) {
+    $p->prepare("UPDATE BAPIKEYS SET BOWNERID = ?, BSTATUS = 'active' WHERE BID = ?")->execute([$owner, $row['BID']]);
+    echo "moved to the new owner";
+} else {
+    $p->prepare("UPDATE BAPIKEYS SET BSTATUS = 'active' WHERE BID = ?")->execute([$row['BID']]);
+    echo "present";
+}
+"""
+
+
+def web_pod(sh, ns):
+    pods = (sh.kjson("get", "pods", "-l", WEB_POD_SELECTOR, ns=ns) or {}).get("items", [])
+    ready = [p["metadata"]["name"] for p in pods
+             if all(c.get("ready") for c in dig(p, "status", "containerStatuses", default=[]) or [{}])]
+    if not ready:
+        raise Stop(f"no ready Synaplan web pod in {ns}", f"kubectl -n {ns} get pods -l app.kubernetes.io/name=synaplan")
+    return ready[0]
+
+
+def in_synaplan(sh, ns, pod, *args, input_text=None, check=True):
+    return sh.kubectl("exec", "-i", pod, "-c", "synaplan", "--", *args,
+                      ns=ns, input_text=input_text if input_text is not None else "", check=check)
+
+
+def secret_value(sh, ns, name, key):
+    value = b64(sh.kjson("get", "secret", name, ns=ns), key)
+    if not value:
+        raise Stop(f"Secret {name} (key {key}) not found in {ns}", "Run ./synascriber install.")
+    return value
+
+
+def step_plugin(sh, t):
+    cfg = sh.cfg
+    ns = t["namespace"]
+    say("Synaplan: meeting-notes plugin")
+    pod = web_pod(sh, ns)
+    email = cfg["PLUGIN_OWNER_EMAIL"] or b64(sh.kjson("get", "secret", "synaplan-bootstrap-admin", ns=ns), "email")
+    owner = json.loads(in_synaplan(sh, ns, pod, "php", "-r", PHP_OWNER, email, input_text="").stdout.strip() or "{}").get("owner")
+    if not owner:
+        raise Stop(f"no Synaplan administrator found (looked for {email})",
+                   f"kubectl -n {ns} logs {pod} -c synaplan | grep -i 'administrator'")
+    ok(f"plugin owner: Synaplan user {owner} ({email})")
+    t["ownerId"] = owner
+    for command in (["app:plugin:install", str(owner), "synascriber"], ["app:plugin:install-verified-users", "synascriber"]):
+        result = in_synaplan(sh, ns, pod, "php", "/var/www/backend/bin/console", *command, "--no-interaction",
+                             input_text="", check=False)
+        text = (result.stdout + result.stderr).strip().splitlines()
+        if result.returncode != 0:
+            raise Stop(f"{command[0]} failed", "\n".join(text[-8:]))
+        last = next((l.strip() for l in reversed(text) if l.strip() and not l.lstrip().startswith("{")), "done")
+        ok(f"{command[0]}: {re.sub(r'^\[OK\]\s*', '', last)}")
+    api_key = secret_value(sh, ns, "synascriber", "api-key")
+    result = in_synaplan(sh, ns, pod, "php", "-r", PHP_API_KEY, str(owner), input_text=api_key + "\n")
+    ok(f"transcriber API key: {result.stdout.strip()}")
+    settings = {
+        "enabled": True,
+        "languages": [x.strip() for x in cfg["NOTES_LANGUAGES"].split(",") if x.strip()],
+        "default_language": cfg["NOTES_DEFAULT_LANGUAGE"],
+        "default_folder": cfg["NOTES_FOLDER"],
+        "stt_url": stt_url(cfg, t),
+        "prosody_url": t["prosodyUrl"],
+        "prosody_secret": secret_value(sh, ns, "synascriber", "prosody-secret"),
+        "owner_user_id": owner,
+        "timezone": cfg["NOTES_TIMEZONE"],
+        "captions": cfg["LIVE_CAPTIONS"].lower() != "off",
+    }
+    checks = plugin_api(sh, t, pod, "PUT", "/admin/settings", settings)
+    ok(f"settings: languages {','.join(settings['languages'])}, folder {settings['default_folder']}, "
+       f"live captions {'on' if settings['captions'] else 'off'}")
+    report_checks({k: v for k, v in checks.items() if k != "jitsi"})
+
+
+def plugin_api(sh, t, pod, method, path, body=None):
+    api_key = secret_value(sh, t["namespace"], "synascriber", "api-key")
+    script = ('code=$(curl -s -o /tmp/synascriber.json -w "%{http_code}" -X "$1" -H "Host: $2" -H "Authorization: Bearer $3" '
+              '-H "Content-Type: application/json" --data-binary @- "http://127.0.0.1/api/v1/plugins/synascriber$4"); '
+              'echo "$code"; cat /tmp/synascriber.json; rm -f /tmp/synascriber.json')
+    result = in_synaplan(sh, t["namespace"], pod, "sh", "-c", script, "sh", method, t["synaplanHost"], api_key, path,
+                         input_text=json.dumps(body) if body is not None else "")
+    code, _, payload = result.stdout.partition("\n")
+    if code.strip() != "200":
+        raise Stop(f"meeting-notes plugin {method} {path}: HTTP {code.strip()}", payload[:600])
+    return json.loads(payload).get("checks", {})
+
+
+def report_checks(checks):
+    labels = {"jitsi": "Jitsi (Prosody module)", "speech": "speech-to-text server", "owner": "plugin owner", "secret": "shared secret"}
+    for key, good in checks.items():
+        (ok if good else warn)(f"plugin check {labels.get(key, key)}: {'ok' if good else 'NOT OK'}")
+
+
+# ------------------------------------------------------------------ Jitsi
+
+
+def jitsi_chart(sh, t):
+    """The deployed opendesk-jitsi chart, pulled once; tells which Jicofo hook it has."""
+    version = t["jitsiChartVersion"]
+    cache = STATE_ROOT / "charts" / f"opendesk-jitsi-{version}"
+    if not (cache / "opendesk-jitsi" / "Chart.yaml").is_file():
+        cache.mkdir(parents=True, exist_ok=True)
+        sh.run([sh.cfg["HELM"], "pull", sh.cfg["JITSI_CHART"], "--version", version, "--untar", "--untardir", str(cache)])
+    chart = cache / "opendesk-jitsi"
+    modern = (chart / "charts" / "jitsi-meet" / "templates" / "jicofo" / "configmap-configs.yaml").is_file()
+    return chart, modern
+
+
+def jitsi_entries(sh, t, modern):
+    """What meeting notes add to openDesk's Jitsi. No secrets: Prosody and Jicofo read them from Secrets."""
+    ns, cd = t["namespace"], t["clusterDomain"]
+    loader = f"{t['synaplanUrl']}/api/v1/user/{t['ownerId']}/plugins/synascriber/assets/jitsi/loader.js"
+    head = (f'<script defer src="{loader}" data-synaplan="{t["synaplanUrl"]}" data-issuer="{t["issuer"]}" '
+            f'data-client-id="synascriber"></script>\n')
+    jicofo_conf = (
+        "jicofo {\n"
+        "  transcription {\n"
+        f"    url-template = \"ws://synascriber-transcriber.{ns}.svc.{cd}:8095/transcribe?sessionId={{{{MEETING_ID}}}}\"\n"
+        "    http-headers {\n"
+        "      \"Authorization\" = \"Bearer \"${?SYNASCRIBER_TRANSCRIBER_TOKEN}\n"
+        "    }\n"
+        "  }\n"
+        "}\n")
+    secrets = hashlib.sha256((secret_value(sh, ns, "synascriber", "prosody-secret") + "\n" +
+                              secret_value(sh, ns, "synascriber", "transcriber-token")).encode()).hexdigest()[:12]
+    # Every reference is optional: Jitsi keeps starting after an uninstall even
+    # if these settings are still in the openDesk environment.
+    jicofo = {"extraEnvFrom": [{"secretRef": {"name": "synascriber-jicofo", "optional": True}}],
+              "podAnnotations": {"synascriber/secrets": secrets}}
+    entries = {}
+    if modern:
+        jicofo["custom"] = {"configs": {"_custom_jicofo_conf": jicofo_conf}}
+    else:
+        # Older charts have no jicofo.extraEnvFrom; this hook reaches every Jitsi container.
+        jicofo.pop("extraEnvFrom")
+        entries["global"] = {"releaseSecretsOverride": {"enabled": True, "extraEnvFrom": [
+            {"secretRef": {"name": "synascriber-jicofo", "optional": True}}]}}
+        jicofo["extraFiles"] = [
+            {"path": JICOFO_DEFAULTS, "content": jicofo_conf},
+            {"path": JICOFO_INIT, "mode": "0755", "content": (
+                "#!/usr/bin/with-contenv bash\n"
+                f"cp {JICOFO_DEFAULTS} /config/custom-jicofo.conf\n"
+                "chown jicofo:jitsi /config/custom-jicofo.conf\n")},
+        ]
+    return {"jitsi": dict(entries, **{
+        "web": {"extraFiles": [
+            {"path": HEAD_FILE, "content": head},
+            {"path": SILENT_FILE, "content": SILENT_PAGE.read_text(encoding="utf-8")},
+        ]},
+        "prosody": {
+            "extraEnvs": {"XMPP_MODULES": "synascriber"},
+            "extraEnvFrom": [{"secretRef": {"name": "synascriber-prosody", "optional": True}}],
+            "extraVolumes": [{"name": "synascriber-prosody", "configMap": {"name": "synascriber-prosody", "optional": True}}],
+            "extraVolumeMounts": [{"name": "synascriber-prosody", "mountPath": MODULE_MOUNT,
+                                   "subPath": "mod_synascriber.lua", "readOnly": True}],
+            "podAnnotations": {"synascriber/module": digest(PROSODY_MODULE.parent, [PROSODY_MODULE.name]), "synascriber/secrets": secrets},
+        },
+        "jicofo": jicofo,
+    })}
+
+
+def item_key(item):
+    if isinstance(item, dict):
+        for key in ("path", "name", "mountPath"):
+            if key in item:
+                return (key, item[key])
+        if "secretRef" in item:
+            return ("secretRef", item["secretRef"].get("name"))
+        if "configMapRef" in item:
+            return ("configMapRef", item["configMapRef"].get("name"))
+    return ("value", json.dumps(item, sort_keys=True))
+
+
+def merge(base, add):
+    """Deep merge; lists of named items are merged by name/path instead of replaced."""
+    if isinstance(base, dict) and isinstance(add, dict):
+        out = dict(base)
+        for key, value in add.items():
+            if key == "XMPP_MODULES" and base.get(key):
+                mods = [m for m in base[key].split(",") if m.strip()]
+                out[key] = ",".join(mods + [m for m in value.split(",") if m not in mods])
+            else:
+                out[key] = merge(base.get(key), value) if key in base else value
+        return out
+    if isinstance(base, list) and isinstance(add, list):
+        out = [item for item in base if item_key(item) not in {item_key(a) for a in add}]
+        return out + add
+    return add
+
+
+def unmerge(base, ours):
+    """base without what merge() added from ours."""
+    if isinstance(base, dict) and isinstance(ours, dict):
+        out = dict(base)
+        for key, value in ours.items():
+            if key not in base:
+                continue
+            if key == "XMPP_MODULES":
+                mods = [m for m in base[key].split(",") if m.strip() and m not in value.split(",")]
+                if mods:
+                    out[key] = ",".join(mods)
+                else:
+                    out.pop(key)
+            elif isinstance(value, (dict, list)):
+                out[key] = unmerge(base[key], value)
+                if out[key] in ({}, []):
+                    out.pop(key)
+            elif key != "enabled":
+                out.pop(key)
+        # A switch stays when it still guards someone else's settings next to it.
+        if "enabled" in ours and "enabled" in out and len(out) == 1:
+            out.pop("enabled")
+        return out
+    if isinstance(base, list) and isinstance(ours, list):
+        keys = {item_key(o) for o in ours}
+        return [item for item in base if item_key(item) not in keys]
+    return base
+
+
+def step_jitsi(sh, t, assume_yes, dry=False, remove=False):
+    ns = t["namespace"]
+    say("Jitsi: button and sign-in page, Prosody module, bridge to the transcriber")
+    chart, modern = jitsi_chart(sh, t)
+    note(f"opendesk-jitsi {t['jitsiChartVersion']}: Jicofo settings via "
+         + ("custom-jicofo.conf of the chart" if modern else "a start script (older chart)"))
+    ours = jitsi_entries(sh, t, modern)
+    current = t["jitsiValues"]
+    if remove:
+        wanted = unmerge(current, strip_volatile(ours))
+    else:
+        wanted = merge(unmerge(current, strip_volatile(ours)), ours)
+    if wanted == current:
+        ok("Jitsi already has the current meeting-notes settings")
+        return False
+    out = state_dir(t) / "jitsi-values.json"
+    out.write_text(json.dumps(wanted, indent=1) + "\n", encoding="utf-8")
+    out.chmod(0o600)
+    args = ["upgrade", t["jitsiRelease"], str(chart), "--reset-values", "-f", str(out)]
+    if dry:
+        diff = sh.helm("diff", *args, "--context", "3", ns=ns, check=False)
+        print(re.sub(r"^", "   ", (diff.stdout or diff.stderr).strip() or "(no difference)", flags=re.M))
+        return True
+    if not ask("Jitsi's Prosody, Jicofo and web restart now; running meetings end. Continue?", assume_yes):
+        raise Stop("stopped before changing Jitsi", "Run again when no meeting is running, or with --yes.")
+    sh.helm(*args, "--timeout", "10m", ns=ns)
+    for kind, name in (("statefulset", f"{t['jitsiRelease']}-prosody"), ("deployment", f"{t['jitsiRelease']}-jicofo"),
+                       ("deployment", f"{t['jitsiRelease']}-web")):
+        sh.kubectl("rollout", "status", f"{kind}/{name}", "--timeout=600s", ns=ns)
+    ok("Jitsi rolled out" + (" without meeting notes" if remove else ""))
+    return True
+
+
+def strip_volatile(entries):
+    """Our entries with every value that can change between runs, so older versions are found and replaced."""
+    def walk(node):
+        if isinstance(node, dict):
+            return {k: ("" if k in ("content", "_custom_jicofo_conf", "synascriber/module", "synascriber/secrets") else walk(v))
+                    for k, v in node.items()}
+        if isinstance(node, list):
+            return [walk(v) for v in node]
+        return node
+    return walk(entries)
+
+
+# ------------------------------------------------------------------ portal tile
+
+
+PORTAL_ENTRY = "synaplan"
+PORTAL_CATEGORY = "od.applications"
+
+
+class Udm:
+    """openDesk's directory (Nubus UDM REST API), as its Administrator."""
+
+    def __init__(self, sh, ns, port):
+        password = b64(sh.kjson("get", "secret", "ums-nubus-credentials", ns=ns), "administrator_password") \
+            or os.environ.get("OPENDESK_ADMINISTRATOR_PASSWORD", "")
+        if not password:
+            raise Stop("openDesk's Administrator password not found (Secret ums-nubus-credentials)",
+                       "Set OPENDESK_ADMINISTRATOR_PASSWORD in your shell.")
+        self.base = f"http://127.0.0.1:{port}/univention/udm"
+        self.auth = {"Authorization": "Basic " + base64.b64encode(f"Administrator:{password}".encode()).decode(),
+                     "Accept": "application/json"}
+
+    def get(self, path):
+        status, body = http("GET", f"{self.base}/{path}", headers=self.auth)
+        if status == 401:
+            raise Stop("openDesk's directory refused the Administrator password from Secret ums-nubus-credentials",
+                       "If you changed it, set OPENDESK_ADMINISTRATOR_PASSWORD in your shell.")
+        return body if status == 200 else None
+
+    def objects(self, kind, query):
+        body = self.get(f"{kind}/?{query}&properties=*") or {}
+        return body.get("_embedded", {}).get("udm:object", [])
+
+    def write(self, method, url, body):
+        headers = dict(self.auth)
+        if method in ("PATCH", "DELETE"):
+            request = urllib.request.Request(url, method="GET", headers=self.auth)
+            with urllib.request.urlopen(request, timeout=30) as response:
+                headers["If-Match"] = response.headers.get("ETag", "*")
+        status, answer = http(method, url, body=body, headers=headers)
+        if status not in (200, 201, 204):
+            raise Stop(f"openDesk's directory: {method} failed (HTTP {status})", str(answer)[:300])
+
+
+def step_portal(sh, t, remove=False):
+    """The Synaplan tile in openDesk's portal and its app menu (category Applications)."""
+    ns = t["namespace"]
+    say("portal: Synaplan tile" + (" removed" if remove else ""))
+    with PortForward(sh, ns, "svc/ums-udm-rest-api", 9979) as port:
+        udm = Udm(sh, ns, port)
+        categories = udm.objects("portals/category", f"filter=cn%3D{PORTAL_CATEGORY}")
+        if not categories:
+            warn(f"openDesk's portal has no category {PORTAL_CATEGORY}; no tile")
+            return
+        category = categories[0]
+        container = category["dn"].split(",", 2)[2]
+        entries = udm.objects("portals/entry", f"filter=cn%3D{PORTAL_ENTRY}")
+        entry_dn = entries[0]["dn"] if entries else f"cn={PORTAL_ENTRY},cn=entry,{container}"
+        listed = category["properties"].get("entries") or []
+        category_url = f"{udm.base}/portals/category/{urllib.parse.quote(category['dn'], safe='')}"
+        if remove:
+            if entry_dn in listed:
+                udm.write("PATCH", category_url, {"properties": {"entries": [e for e in listed if e != entry_dn]}})
+            if entries:
+                udm.write("DELETE", f"{udm.base}/portals/entry/{urllib.parse.quote(entry_dn, safe='')}", None)
+            ok("tile removed")
+            return
+        properties = {
+            "name": PORTAL_ENTRY,
+            "displayName": {"en_US": "Synaplan", "de_DE": "Synaplan"},
+            "description": {"en_US": "AI assistant for your documents and meeting notes",
+                            "de_DE": "KI-Assistent für Ihre Dokumente und Mitschriften"},
+            "link": [["en_US", t["synaplanUrl"]]],
+            "linkTarget": "newwindow",
+            "target": "tab_synaplan",
+            "activated": True,
+            "anonymous": False,
+            "allowedGroups": [],
+        }
+        icon = in_synaplan(sh, ns, web_pod(sh, ns), "curl", "-sf", "-m", "10", "http://127.0.0.1/single_bird.svg", check=False)
+        if icon.returncode == 0 and "<svg" in icon.stdout:
+            properties["icon"] = base64.b64encode(icon.stdout.encode()).decode()
+        if entries:
+            current = entries[0]["properties"]
+            if any(current.get(k) != v for k, v in properties.items() if k != "icon") or \
+                    ("icon" in properties and current.get("icon") != properties["icon"]):
+                udm.write("PATCH", f"{udm.base}/portals/entry/{urllib.parse.quote(entry_dn, safe='')}", {"properties": properties})
+                ok("tile updated")
+            else:
+                ok("tile unchanged")
+        else:
+            udm.write("POST", f"{udm.base}/portals/entry/", {"position": f"cn=entry,{container}", "properties": properties})
+            ok("tile created")
+        if entry_dn not in listed:
+            udm.write("PATCH", category_url, {"properties": {"entries": listed + [entry_dn]}})
+            ok(f"tile added to the portal's {category['properties'].get('displayName', {}).get('en_US', PORTAL_CATEGORY)}")
+
+
+def portal_listed(sh, t):
+    with PortForward(sh, t["namespace"], "svc/ums-udm-rest-api", 9979) as port:
+        udm = Udm(sh, t["namespace"], port)
+        categories = udm.objects("portals/category", f"filter=cn%3D{PORTAL_CATEGORY}")
+        return any(e.startswith(f"cn={PORTAL_ENTRY},") for c in categories for e in c["properties"].get("entries") or [])
+
+
+# ------------------------------------------------------------------ openDesk environment files
+
+
+def yaml(node, indent=0):
+    pad = "  " * indent
+    if isinstance(node, dict):
+        if not node:
+            return "{}"
+        lines = []
+        for key, value in node.items():
+            k = key if re.fullmatch(r"[A-Za-z0-9_.-]+", key) else json.dumps(key)
+            if isinstance(value, (dict, list)) and value:
+                lines.append(f"{pad}{k}:\n{yaml(value, indent + 1)}")
+            else:
+                lines.append(f"{pad}{k}: {yaml(value)}")
+        return "\n".join(lines)
+    if isinstance(node, list):
+        if not node:
+            return "[]"
+        lines = []
+        for value in node:
+            if isinstance(value, dict) and value:
+                inner = yaml(value, indent + 1).lstrip()
+                lines.append(f"{pad}- {inner}")
+            else:
+                lines.append(f"{pad}- {yaml(value)}")
+        return "\n".join(lines)
+    if isinstance(node, bool):
+        return "true" if node else "false"
+    if isinstance(node, (int, float)):
+        return str(node)
+    return json.dumps(node if node is not None else "", ensure_ascii=False)
+
+
+def step_opendesk_env(sh, t, quiet=False):
+    """Files for the openDesk environment, so openDesk updates keep meeting notes."""
+    folder = state_dir(t) / "opendesk"
+    folder.mkdir(exist_ok=True)
+    _, modern = jitsi_chart(sh, t)
+    jitsi_file = folder / "synascriber-jitsi.yaml"
+    jitsi_file.write_text("# Meeting notes in openDesk's Jitsi (synaScriber). Generated by ./synascriber; no secrets.\n"
+                          + yaml(jitsi_entries(sh, t, modern)) + "\n", encoding="utf-8")
+    oidc = {}
+    for rep in clients(t):
+        rep = dict(rep)
+        secret = rep.pop("_secret", None)
+        if secret:
+            rep["secret"] = {"existingSecret": {"name": secret[0], "key": secret[1]}}
+        oidc[rep["clientId"]] = rep
+    env_file = folder / "synascriber.yaml.gotmpl"
+    env_file.write_text(
+        "# Meeting notes (synaScriber) for this openDesk. Generated by ./synascriber; no secrets.\n"
+        "# Copy into your openDesk environment folder, e.g. helmfile/environments/<env>/,\n"
+        "# and keep synascriber-jitsi.yaml where the path below points.\n"
+        + yaml({"functional": {"authentication": {"oidc": {"clients": oidc}}},
+                "customization": {"release": {"jitsi": {"synascriber": str(jitsi_file)}}}}) + "\n",
+        encoding="utf-8")
+    if not quiet:
+        say("openDesk environment")
+        ok(f"{env_file}")
+        ok(f"{jitsi_file}")
+        print(textwrap_block(f"""
+          openDesk's own deployment removes Keycloak clients and Jitsi settings it does
+          not know. Copy {env_file.name} into your openDesk environment folder
+          (e.g. helmfile/environments/dev/), then once:
+
+            helmfile apply -e <env> -n {t['namespace']} -l name=opendesk-keycloak-bootstrap
+            helmfile apply -e <env> -n {t['namespace']} -l name={t['jitsiRelease']}
+
+          From then on every openDesk update keeps meeting notes."""))
+    return env_file
+
+
+def textwrap_block(text):
+    lines = text.strip("\n").splitlines()
+    margin = min(len(l) - len(l.lstrip()) for l in lines if l.strip())
+    return "\n".join("   " + l[margin:] if l.strip() else "" for l in lines)
+
+
+def persistent(sh, t):
+    values = json.loads(sh.helm("get", "values", "opendesk-keycloak-bootstrap", "-o", "json",
+                                ns=t["namespace"], check=False).stdout or "{}")
+    custom = dig(values, "config", "custom", "clients", default={}) or {}
+    return all(cid in custom for cid in ("synaplan", "synascriber"))
+
+
+# ------------------------------------------------------------------ verify
+
+
+TLS_CONTEXT = None
+
+
+def trust_private_ca(sh, t):
+    """For openDesk with self-signed certificates: verify against its CA."""
+    global TLS_CONTEXT
+    if t["tls"]["caSecretName"]:
+        ca = b64(sh.kjson("get", "secret", t["tls"]["caSecretName"], ns=t["namespace"]), "ca.crt")
+        if ca:
+            TLS_CONTEXT = ssl.create_default_context(cadata=ca)
+
+
+def fetch(url):
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": "synascriber-verify"})
+        with urllib.request.urlopen(request, timeout=20, context=TLS_CONTEXT) as r:
+            return r.status, r.read().decode(errors="ignore")
+    except urllib.error.HTTPError as error:
+        return error.code, ""
+    except (urllib.error.URLError, OSError) as error:
+        return 0, str(error)
+
+
+def step_verify(sh, t):
+    ns = t["namespace"]
+    say("verify")
+    trust_private_ca(sh, t)
+    problems = 0
+
+    def check(good, text, fix=""):
+        nonlocal problems
+        if good:
+            ok(text)
+        else:
+            problems += 1
+            warn(text + (f" — {fix}" if fix else ""))
+
+    for kind, name in (("statefulset", "synaplan-mariadb"), ("deployment", "synaplan"), ("deployment", "synaplan-worker"),
+                       ("deployment", "synaplan-scheduler"), ("deployment", "synascriber-transcriber")):
+        obj = sh.kjson("get", kind, name, ns=ns) or {}
+        want, ready = dig(obj, "spec", "replicas", default=1), dig(obj, "status", "readyReplicas", default=0)
+        check(obj and ready == want, f"{name}: {ready or 0}/{want} ready", f"kubectl -n {ns} describe {kind} {name}")
+    status, body = fetch(f"{t['synaplanUrl']}/api/health")
+    check(status == 200, f"Synaplan answers at {t['synaplanUrl']} (HTTP {status})",
+          "DNS for the Synaplan name, or the certificate (kubectl -n %s get certificate)" % ns)
+    pod = web_pod(sh, ns)
+    email = sh.cfg["PLUGIN_OWNER_EMAIL"] or b64(sh.kjson("get", "secret", "synaplan-bootstrap-admin", ns=ns), "email")
+    owner = json.loads(in_synaplan(sh, ns, pod, "php", "-r", PHP_OWNER, email, input_text="").stdout.strip() or "{}").get("owner")
+    t["ownerId"] = owner
+    loader = f"{t['synaplanUrl']}/api/v1/user/{owner}/plugins/synascriber/assets/jitsi/loader.js"
+    status, _ = fetch(loader)
+    check(status == 200, f"the Jitsi button script is served (HTTP {status})", "./synascriber install (plugin step)")
+    status, page = fetch(f"https://{t['jitsiHost']}/")
+    check("synascriber/assets/jitsi/loader.js" in page, "Jitsi pages load the button script", "./synascriber install (Jitsi step)")
+    status, _ = fetch(f"https://{t['jitsiHost']}{SILENT_PATH}")
+    check(status == 200, f"the silent sign-in page is served (HTTP {status})", "./synascriber install (Jitsi step)")
+    try:
+        check(portal_listed(sh, t), "Synaplan tile in openDesk's portal", "./synascriber install (portal step)")
+    except Stop as stop:
+        check(False, f"portal tile: {stop}")
+    module = sh.kubectl("exec", "deploy/synascriber-transcriber", "--", "wget", "-qO-", f"{t['prosodyUrl']}/synascriber/health",
+                        ns=ns, check=False)
+    check('"ok":true' in module.stdout.replace(" ", ""), "Prosody module answers: " + (module.stdout.strip() or module.stderr.strip())[:120])
+    health = sh.kubectl("exec", "deploy/synascriber-transcriber", "--", "wget", "-qO-", "http://127.0.0.1:8095/health",
+                        ns=ns, check=False)
+    check(health.returncode == 0, "transcriber answers: " + (health.stdout.strip() or health.stderr.strip())[:120])
+    try:
+        checks = plugin_api(sh, t, pod, "GET", "/admin/status")
+        report_checks(checks)
+        problems += sum(1 for good in checks.values() if not good)
+    except Stop as stop:
+        check(False, str(stop), stop.hint[:200])
+    if persistent(sh, t):
+        ok("openDesk's environment declares the meeting-notes clients (kept through openDesk updates)")
+    else:
+        warn("openDesk's environment does not declare the meeting-notes clients yet: the next openDesk "
+             "deployment removes them. ./synascriber opendesk-env shows what to add.")
+    return problems
+
+
+# ------------------------------------------------------------------ main flows
+
+
+def summary(sh, t):
+    ns = t["namespace"]
+    say("done")
+    print(textwrap_block(f"""
+      Synaplan:       {t['synaplanUrl']}  (sign in with your openDesk account)
+      Meetings:       https://{t['jitsiHost']}  → the "Meeting notes" button appears after you join
+      Transcripts:    Synaplan › Sources › Generated, folder {sh.cfg['NOTES_FOLDER']}
+
+      Synaplan's local administrator (owns the plugin; people use Keycloak):
+        email:    {b64(sh.kjson('get', 'secret', 'synaplan-bootstrap-admin', ns=ns), 'email')}
+        password: kubectl -n {ns} get secret synaplan-bootstrap-admin -o jsonpath='{{.data.password}}' | base64 -d
+    """))
+
+
+def wait_rollouts(sh, t):
+    ns = t["namespace"]
+    say("waiting for Synaplan (the first start creates the database, a few minutes)")
+    targets = [("statefulset", "synaplan-mariadb"), ("deployment", "synascriber-transcriber"),
+               ("deployment", "synaplan"), ("deployment", "synaplan-worker"), ("deployment", "synaplan-scheduler")]
+    if sh.cfg["STT"] != "url":
+        targets.insert(1, ("deployment", "synaplan-stt"))
+    for kind, name in targets:
+        result = sh.kubectl("rollout", "status", f"{kind}/{name}", "--timeout=900s", ns=ns, check=False)
+        if result.returncode != 0:
+            raise Stop(f"{name} did not become ready", f"kubectl -n {ns} describe {kind} {name}; kubectl -n {ns} logs {kind}/{name}")
+        ok(f"{name} ready")
+
+
+def stt_reachable(sh, t):
+    url = stt_url(sh.cfg, t)
+    pod = web_pod(sh, t["namespace"])
+    result = in_synaplan(sh, t["namespace"], pod, "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "-m", "10",
+                         url + "/health", input_text="", check=False)
+    (ok if result.stdout.strip() == "200" else warn)(f"speech-to-text {url}/health from Synaplan: HTTP {result.stdout.strip() or '-'}")
+
+
+def cmd_check(sh, args):
+    check_tools(sh)
+    t = discover(sh)
+    check_stt(sh, t)
+    say("what install would do")
+    print(textwrap_block(f"""
+      1. Synaplan {sh.cfg['SYNAPLAN_VERSION']} at {t['synaplanUrl']}, with its own MariaDB, in namespace {t['namespace']}
+      2. speech-to-text: {'your server ' + sh.cfg['STT_URL'] if sh.cfg['STT'] == 'url' else 'synaplan-stt (' + sh.cfg['STT'] + ')'}
+      3. the meeting-notes plugin, the transcriber and the Prosody module (release synascriber)
+      4. two Keycloak clients in realm {t['realm']}: synaplan, synascriber, and a Synaplan tile in openDesk's portal
+      5. openDesk's Jitsi ({t['jitsiRelease']}): button, sign-in page, Prosody module, bridge to the transcriber
+         (Prosody, Jicofo and Jitsi web restart once; running meetings end)
+    """))
+    return t
+
+
+def cmd_plan(sh, args):
+    t = cmd_check(sh, args)
+    say("Helm releases (diff)")
+    helmfile(sh, write_state(sh, t), "diff", "--suppress-secrets", "--context", "3", "--diff-args", "--dry-run=server", check=False)
+    if "synaplan-resources" in t["releases"] and sh.kjson("get", "secret", "synascriber", ns=t["namespace"]):
+        step_keycloak(sh, t, dry=True)
+        try:
+            step_plugin_owner_only(sh, t)
+            step_jitsi(sh, t, True, dry=True)
+        except Stop as stop:
+            warn(f"Jitsi preview skipped: {stop}")
+    else:
+        note("Keycloak and Jitsi previews follow after the first install (they need Synaplan's secrets).")
+
+
+def step_plugin_owner_only(sh, t):
+    ns = t["namespace"]
+    pod = web_pod(sh, ns)
+    email = sh.cfg["PLUGIN_OWNER_EMAIL"] or b64(sh.kjson("get", "secret", "synaplan-bootstrap-admin", ns=ns), "email")
+    t["ownerId"] = json.loads(in_synaplan(sh, ns, pod, "php", "-r", PHP_OWNER, email, input_text="").stdout.strip() or "{}").get("owner")
+
+
+def cmd_install(sh, args):
+    t = cmd_check(sh, args)
+    if not ask("Install now?", args.yes):
+        raise Stop("nothing changed")
+    say("Helm releases: Synaplan and meeting notes")
+    module_before = (sh.kjson("get", "configmap", "synascriber-prosody", ns=t["namespace"]) or {}).get("data")
+    helmfile(sh, write_state(sh, t), "apply", "--suppress-diff", "--diff-args", "--dry-run=server")
+    wait_rollouts(sh, t)
+    stt_reachable(sh, t)
+    step_keycloak(sh, t)
+    step_plugin(sh, t)
+    step_portal(sh, t)
+    changed = step_jitsi(sh, t, args.yes)
+    module_after = (sh.kjson("get", "configmap", "synascriber-prosody", ns=t["namespace"]) or {}).get("data")
+    if not changed and module_before and module_before != module_after:
+        sh.kubectl("rollout", "restart", f"statefulset/{t['jitsiRelease']}-prosody", ns=t["namespace"])
+    step_opendesk_env(sh, t)
+    t["jitsiValues"] = json.loads(sh.helm("get", "values", t["jitsiRelease"], "-o", "json", ns=t["namespace"]).stdout or "{}")
+    problems = step_verify(sh, t)
+    summary(sh, t)
+    return 1 if problems else 0
+
+
+def cmd_verify(sh, args):
+    check_tools(sh)
+    t = discover(sh)
+    return 1 if step_verify(sh, t) else 0
+
+
+def cmd_opendesk_env(sh, args):
+    check_tools(sh)
+    t = discover(sh)
+    step_plugin_owner_only(sh, t)
+    step_opendesk_env(sh, t)
+
+
+def cmd_uninstall(sh, args):
+    check_tools(sh)
+    t = discover(sh)
+    ns = t["namespace"]
+    what = "meeting notes and Synaplan (with its database)" if args.all else "meeting notes (Synaplan stays)"
+    if not ask(f"Remove {what} from {ns}?", args.yes):
+        raise Stop("nothing changed")
+    try:
+        step_plugin_owner_only(sh, t)
+    except Stop:
+        t["ownerId"] = 0
+    if sh.kjson("get", "secret", "synascriber", ns=ns):
+        step_jitsi(sh, t, True, remove=True)
+    step_keycloak(sh, t, remove=("synascriber", "synaplan") if args.all else ("synascriber",))
+    if args.all:
+        step_portal(sh, t, remove=True)
+    state = write_state(sh, t, enabled=False)
+    if args.all:
+        helmfile(sh, state, "destroy")
+        for kind, name in (("secret", "synaplan-mariadb"), ("secret", "synaplan-oidc-credentials"), ("secret", "synaplan-app-secret"),
+                           ("secret", "synaplan-bootstrap-admin"), ("pvc", "data-synaplan-mariadb-0")):
+            sh.kubectl("delete", kind, name, "--ignore-not-found", ns=ns)
+    else:
+        helmfile(sh, state, "apply", "--suppress-diff", "--diff-args", "--dry-run=server")
+    sh.kubectl("delete", "secret", "synascriber", "--ignore-not-found", ns=ns)
+    say("removed")
+    ok(f"{what} removed from {ns}")
+    note("Remove synascriber.yaml.gotmpl from your openDesk environment too, if you added it.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("command", choices=["check", "plan", "install", "verify", "opendesk-env", "uninstall"])
+    parser.add_argument("--env", type=pathlib.Path, default=HERE / "synascriber.env")
+    parser.add_argument("--yes", action="store_true")
+    parser.add_argument("--all", action="store_true", help="uninstall: remove Synaplan and its database too")
+    args = parser.parse_args()
+    try:
+        if not args.env.is_file() and args.command != "check":
+            raise Stop(f"{args.env} not found", f"cp {HERE / 'synascriber.env.example'} {args.env}  and edit it.")
+        sh = Shell(load_settings(args.env))
+        flows = {"check": cmd_check, "plan": cmd_plan, "install": cmd_install, "verify": cmd_verify,
+                 "opendesk-env": cmd_opendesk_env, "uninstall": cmd_uninstall}
+        result = flows[args.command](sh, args)
+        return result if isinstance(result, int) else 0
+    except Stop as stop:
+        print(f"\n   \033[31mstopped\033[0m  {stop}", file=sys.stderr)
+        if stop.hint:
+            print(re.sub(r"^", "            ", stop.hint.strip(), flags=re.M), file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print("\n   interrupted", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

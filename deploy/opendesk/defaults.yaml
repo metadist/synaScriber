@@ -1,0 +1,33 @@
+# Defaults for helmfile.yaml.gotmpl. ./synascriber overrides them with the
+# values it finds in your cluster and in synascriber.env.
+
+synaplanCharts:
+  # Synaplan's charts, including the openDesk add-on (deployments/opendesk-addon)
+  repo: https://github.com/metadist/synaplan-charts.git
+  ref: a14fa65db007fd79d136d34f7457460e42553ae6
+  # A local checkout instead of repo@ref (development)
+  path: ""
+
+opendesk:
+  namespace: ""
+  domain: ""
+  keycloakHost: id
+  realm: opendesk
+  clusterDomain: cluster.local
+  ingressClassName: haproxy
+  tls:
+    secretName: ""
+    issuerKind: ClusterIssuer
+    issuerName: letsencrypt-prod
+    caSecretName: ""
+  collaboraUrl: ""
+
+synaplan: {}
+stt: {}
+mariadb: {}
+
+synascriber:
+  enabled: true
+  transcriber:
+    language: de
+    previewEveryMs: 1500

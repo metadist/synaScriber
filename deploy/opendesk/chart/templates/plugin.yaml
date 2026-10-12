@@ -1,0 +1,16 @@
+{{- $files := .Files.Glob "files/plugin/**" }}
+{{- if not (.Files.Get "files/plugin/manifest.json") }}
+{{- fail "chart/files/plugin is empty: the symlink to synascriber-plugin/ is missing (on Windows: use WSL, or git config core.symlinks true and check out again)" }}
+{{- end }}
+# The synaScriber plugin, mounted at /plugins/synascriber in the Synaplan
+# web, worker and scheduler pods (the synaplan release's volumes).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: synascriber-plugin
+  labels:
+    {{- include "synascriber.labels" . | nindent 4 }}
+data:
+  {{- range $path, $_ := $files }}
+  {{ include "synascriber.pluginKey" $path }}: {{ $.Files.Get $path | quote }}
+  {{- end }}
