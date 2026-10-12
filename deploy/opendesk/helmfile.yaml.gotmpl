@@ -1,0 +1,31 @@
+# Meeting notes for an openDesk you already run: Synaplan (the openDesk
+# add-on of synaplan-charts, pinned below) plus the synascriber release.
+#
+# ./synascriber writes the state values and runs this file; it also does
+# the steps Helm cannot (Keycloak clients, plugin setup, Jitsi settings).
+environments:
+  default:
+    values:
+      - defaults.yaml
+
+---
+{{- $sc := .Values.synaplanCharts }}
+{{- $ns := required "opendesk.namespace is required" .Values.opendesk.namespace }}
+helmfiles:
+  {{- if $sc.path }}
+  - path: {{ $sc.path }}/deployments/opendesk-addon/helmfile.yaml.gotmpl
+  {{- else }}
+  - path: git::{{ $sc.repo }}@deployments/opendesk-addon/helmfile.yaml.gotmpl?ref={{ $sc.ref }}
+  {{- end }}
+    values:
+      - {{- toYaml (dict "opendesk" .Values.opendesk "synaplan" .Values.synaplan "stt" .Values.stt "mariadb" .Values.mariadb) | nindent 8 }}
+
+releases:
+  - name: synascriber
+    namespace: {{ $ns }}
+    chart: ./chart
+    installed: {{ .Values.synascriber.enabled }}
+    values:
+      - synaplanInternalUrl: "http://synaplan.{{ $ns }}.svc.{{ .Values.opendesk.clusterDomain }}"
+        transcriber:
+          {{- toYaml .Values.synascriber.transcriber | nindent 10 }}

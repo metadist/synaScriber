@@ -243,18 +243,27 @@ empty/error/flag-off, themes).
 
 ## MN-12 — Production packaging for openDesk
 
-- `deploy/opendesk/values-jitsi-synascriber.yaml.gotmpl` for openDesk's
-  `customization.release.jitsi` slot: web (loader include, silent page,
-  `config.transcription`), Prosody (module, conf, env), Jicofo (custom conf,
-  token env), all switched by one value, default off.
-- `deploy/synaplan-charts/values-synascriber.yaml` (plugin mount for web,
-  worker, scheduler; transcriber deployment; `speech.whisperServerUrl` to
-  the `stt` release from `MN-8a2` / `MN-8a3`).
-- Merge request to the openDesk edition repo, reviewed by its owner,
-  with an empty render diff for every cluster that does not enable it.
+Built as one installer for a **standard** openDesk (2026-10-12, see
+`STATUS.md`), so nobody needs an edition fork:
 
-**Exit:** the dev cluster runs from these values (overlay removed) and the
-journeys still pass.
+- [x] `deploy/opendesk/synascriber` (`check`, `plan`, `install`, `verify`,
+      `opendesk-env`, `uninstall`), settings in `synascriber.env`, guide in
+      `deploy/opendesk/README.md`.
+- [x] Synaplan from synaplan-charts `deployments/opendesk-addon` (MariaDB
+      11.8, secrets, Keycloak/ingress/certificates/Collabora of openDesk,
+      optional `stt`), pinned by commit.
+- [x] Chart `synascriber`: plugin ConfigMap (mounted in web, worker,
+      scheduler), transcriber, Prosody module, secrets.
+- [x] openDesk's Jitsi through `customization.release.jitsi` values
+      (`head.html`, silent page, module, `custom-jicofo.conf`), and the two
+      Keycloak clients through `functional.authentication.oidc.clients`:
+      generated as `synascriber.yaml.gotmpl`, no secrets, empty render diff.
+- [ ] Published `synaplan-stt` and transcriber images; the installer then
+      drops the from-source transcriber.
+- [ ] Optional: the same values as a merge request to an openDesk edition.
+
+**Exit:** a fresh openDesk is set up from the guide alone and the journeys
+pass — met on openDesk v1.19.1 (dev cluster) with `STT=url`.
 
 ## Later (named so nobody assumes them)
 

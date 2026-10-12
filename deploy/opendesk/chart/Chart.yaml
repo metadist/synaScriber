@@ -1,0 +1,10 @@
+apiVersion: v2
+name: synascriber
+description: Meeting notes for Jitsi in openDesk - the synaScriber plugin files for Synaplan, the transcriber that receives each speaker's audio from Jitsi's bridge, and the Prosody module.
+type: application
+version: 0.1.0
+appVersion: "0.3.0"
+home: https://github.com/metadist/synaScriber
+sources:
+  - https://github.com/metadist/synaScriber
+  - https://github.com/metadist/synaplan/tree/main/sidecars/synaplan-transcriber

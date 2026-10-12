@@ -1,0 +1,144 @@
+{{- $t := .Values.transcriber }}
+{{- $selector := dict "app.kubernetes.io/name" "synascriber-transcriber" }}
+{{- $hardened := dict "allowPrivilegeEscalation" false "readOnlyRootFilesystem" true "capabilities" (dict "drop" (list "ALL")) }}
+# Receives each speaker's audio from Jitsi's bridge (WebSocket), sends short
+# windows to Synaplan and the captions back into the meeting. Audio stays in
+# memory.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synascriber-transcriber
+  labels:
+    {{- include "synascriber.labels" . | nindent 4 }}
+    {{- toYaml $selector | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- toYaml $selector | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "synascriber.labels" . | nindent 8 }}
+        {{- toYaml $selector | nindent 8 }}
+      annotations:
+        synascriber/source: {{ $t.image | default $t.source.ref | quote }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if not $t.image }}
+      initContainers:
+        - name: fetch
+          image: {{ $t.node.image | quote }}
+          command: ["sh", "-ec"]
+          args:
+            - |
+              url=$(echo "$SOURCE_URL" | sed "s/{ref}/$SOURCE_REF/")
+              cd /tmp
+              wget -qO- "$url" | tar -xz
+              src=$(ls -d /tmp/*/sidecars/synaplan-transcriber)
+              cp "$src/package.json" "$src/package-lock.json" /app/
+              cp -r "$src/src" /app/src
+              rm -rf /tmp/*/
+              cd /app
+              npm ci --omit=dev --no-audit --no-fund --loglevel=error
+          env:
+            - name: SOURCE_URL
+              value: {{ $t.source.url | quote }}
+            - name: SOURCE_REF
+              value: {{ $t.source.ref | quote }}
+            - name: HOME
+              value: /tmp
+            - name: npm_config_cache
+              value: /tmp/.npm
+          securityContext:
+            {{- toYaml $hardened | nindent 12 }}
+          volumeMounts:
+            - name: app
+              mountPath: /app
+            - name: tmp
+              mountPath: /tmp
+      {{- end }}
+      containers:
+        - name: transcriber
+          image: {{ $t.image | default $t.node.image | quote }}
+          {{- if not $t.image }}
+          workingDir: /app
+          command: ["node", "src/index.js"]
+          {{- end }}
+          env:
+            - name: TRANSCRIBER_MODE
+              value: jitsi
+            - name: TRANSCRIBER_PORT
+              value: "8095"
+            - name: TRANSCRIBER_LANGUAGE
+              value: {{ $t.language | quote }}
+            - name: COMMIT_AFTER_MS
+              value: {{ $t.commitAfterMs | quote }}
+            - name: PREVIEW_EVERY_MS
+              value: {{ $t.previewEveryMs | quote }}
+            - name: SYNAPLAN_URL
+              value: {{ .Values.synaplanInternalUrl | quote }}
+            - name: SYNAPLAN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.name }}
+                  key: api-key
+            - name: TRANSCRIBER_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.name }}
+                  key: transcriber-token
+          ports:
+            - name: ws
+              containerPort: 8095
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: ws
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: ws
+            periodSeconds: 20
+          resources:
+            {{- toYaml $t.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml $hardened | nindent 12 }}
+          volumeMounts:
+            {{- if not $t.image }}
+            - name: app
+              mountPath: /app
+            {{- end }}
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        {{- if not $t.image }}
+        - name: app
+          emptyDir:
+            sizeLimit: 128Mi
+        {{- end }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: synascriber-transcriber
+  labels:
+    {{- include "synascriber.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- toYaml $selector | nindent 4 }}
+  ports:
+    - name: ws
+      port: 8095
+      targetPort: ws

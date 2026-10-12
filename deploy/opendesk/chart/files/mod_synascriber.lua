@@ -1,0 +1,1 @@
+../../../../prosody/mod_synascriber.lua

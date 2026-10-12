@@ -1,0 +1,10 @@
+# Prosody module, mounted into Jitsi's Prosody at
+# /prosody-plugins-custom/mod_synascriber.lua (Jitsi values, see the installer).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: synascriber-prosody
+  labels:
+    {{- include "synascriber.labels" . | nindent 4 }}
+data:
+  mod_synascriber.lua: {{ .Files.Get "files/mod_synascriber.lua" | quote }}

@@ -10,6 +10,27 @@ service in between.
 
 ---
 
+## Get started on your openDesk
+
+You run openDesk with Jitsi and want meeting notes. One command adds
+Synaplan and everything else to it:
+
+```bash
+git clone https://github.com/metadist/synaScriber.git
+cd synaScriber/deploy/opendesk
+cp synascriber.env.example synascriber.env   # choose speech-to-text: cpu, gpu or your server
+./synascriber check                          # changes nothing; shows what it found and will add
+./synascriber install
+```
+
+**Step-by-step guide, requirements and troubleshooting:
+[deploy/opendesk/README.md](deploy/opendesk/README.md).** Tested on
+openDesk v1.19.1 with Synaplan 5.3.2.
+
+| Start in the meeting | After the meeting |
+|---|---|
+| ![Start dialog](docs/images/opendesk-start.png) | ![Live captions and the saved notice](docs/images/opendesk-saved.png) |
+
 ## What it does
 
 1. In an [openDesk](https://www.opendesk.eu) installation with Synaplan, every
@@ -66,11 +87,13 @@ Jitsi web loader   ◀─ button, dialog, banner (Keycloak) ─▶  Synaplan + s
 | v1.2 | Save the transcript into the person's OpenCloud as well. |
 | Later | Element chat and calls, summaries with decisions and action items, translation. |
 
-**Now:** a development MVP runs on our openDesk dev cluster and passes the
-two-person journey end to end (button, start, banner, stop, transcript in
-Synaplan Files) — see [docs/STATUS.md](docs/STATUS.md). The remaining steps
-to v1.0 are in [docs/07_sprints.md](docs/07_sprints.md). Start reading at
-[docs/README.md](docs/README.md).
+**Now:** the installer in [`deploy/opendesk/`](deploy/opendesk/) adds
+Synaplan and meeting notes to a standard openDesk. On openDesk v1.19.1 with
+Synaplan 5.3.2 it passes the two-person journey end to end (button, start,
+banner, live captions, stop, transcript in Synaplan Sources › Generated for
+both people) — see [docs/STATUS.md](docs/STATUS.md). The remaining steps to
+v1.0 are in [docs/07_sprints.md](docs/07_sprints.md). Start reading the plan
+at [docs/README.md](docs/README.md).
 
 ## What is in this repository
 
@@ -79,7 +102,8 @@ to v1.0 are in [docs/07_sprints.md](docs/07_sprints.md). Start reading at
 | [`synascriber-plugin/`](synascriber-plugin/) | The Synaplan plugin (`manifest.json`, PHP backend, plugin page, Jitsi loader, migration). Mount or copy it to `/plugins/synascriber` and run `app:plugin:install`. |
 | [`prosody/mod_synascriber.lua`](prosody/mod_synascriber.lua) | Prosody module on Jitsi's main VirtualHost: lets Synaplan switch bridge transcription on and off per room; clients cannot start it. |
 | [`jitsi/static/`](jitsi/static/) | The silent sign-in page served by Jitsi web. |
-| [`deploy/keycloak/ensure-client.py`](deploy/keycloak/ensure-client.py) | Creates the Keycloak public client the loader signs in with. |
+| [`deploy/opendesk/`](deploy/opendesk/) | **The installer for openDesk**: `./synascriber check / install / verify / uninstall`, the `synascriber` Helm chart, the settings file, the guide. |
+| [`deploy/keycloak/ensure-client.py`](deploy/keycloak/ensure-client.py) | Creates the Keycloak public client the loader signs in with (standalone; the installer does this itself). |
 | [`tests/e2e/meeting-notes.mjs`](tests/e2e/meeting-notes.mjs) | Playwright journey against a real openDesk: two people, speech audio, start, banner, stop, saved file. |
 | [`docs/`](docs/) | Plan, research, architecture, steps, status. |
 
@@ -92,7 +116,7 @@ The transcriber that receives the audio from Jitsi's bridge is the
 | Repository | Role |
 |------------|------|
 | [metadist/synaplan](https://github.com/metadist/synaplan) | The Synaplan server (core): plugin host, files, speech-to-text, the transcriber sidecar. |
-| [metadist/synaplan-charts](https://github.com/metadist/synaplan-charts) | Helm charts: `synaplan`, and `stt` for the Whisper speech server on GPU nodes. |
+| [metadist/synaplan-charts](https://github.com/metadist/synaplan-charts) | Helm charts: `synaplan`, `stt` for the Whisper speech server, and `deployments/opendesk-addon`, which adds Synaplan to an existing openDesk (the installer uses it). |
 | **metadist/synaScriber** (this repo) | The plugin, the Jitsi loader, the Prosody module, openDesk configuration snippets, the plan. |
 
 ## More Synaplan integrations
@@ -108,11 +132,11 @@ The transcriber that receives the audio from Jitsi's bridge is the
 
 ## Requirements (v1.0)
 
-- Synaplan 5.2.0 or later (plugin routes, Whisper server mode); the
-  development MVP runs on 5.1.3
-- openDesk with Jitsi (verified on Jitsi `stable-11031`)
-- A GPU node for the Whisper server is recommended; a CPU variant exists
-  for small installations
+- openDesk with Jitsi — verified on openDesk v1.19.1 (Jitsi `stable-11248`,
+  chart 3.12.4); earlier on Jitsi `stable-11031`
+- Synaplan 5.3.2 (the installer brings it)
+- A speech-to-text server: on a GPU node for real meetings, on CPU for
+  trying it out, or one you already run
 
 ## License
 

@@ -16,3 +16,7 @@ coverage/
 .idea/
 .vscode/
 __pycache__
+
+# openDesk installer: your settings and generated state
+deploy/opendesk/synascriber.env
+deploy/opendesk/.state/
