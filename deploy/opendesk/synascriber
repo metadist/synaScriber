@@ -34,6 +34,9 @@ import urllib.request
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent.parent
+# Generated files live outside the checkout, so they never end up in git.
+STATE_ROOT = pathlib.Path(os.environ.get("SYNASCRIBER_STATE")
+                          or pathlib.Path(os.environ.get("XDG_STATE_HOME") or pathlib.Path.home() / ".local" / "state") / "synascriber")
 PLUGIN_DIR = REPO / "synascriber-plugin"
 PROSODY_MODULE = REPO / "prosody" / "mod_synascriber.lua"
 SILENT_PAGE = REPO / "jitsi" / "static" / "synascriber-silent.html"
@@ -366,7 +369,7 @@ def ghcr_tag_exists(repository, tag):
 
 
 def state_dir(t):
-    path = HERE / ".state" / re.sub(r"[^A-Za-z0-9_.-]", "_", t["context"]) / t["namespace"]
+    path = STATE_ROOT / re.sub(r"[^A-Za-z0-9_.-]", "_", t["context"]) / t["namespace"]
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     return path
 
@@ -780,7 +783,7 @@ def report_checks(checks):
 def jitsi_chart(sh, t):
     """The deployed opendesk-jitsi chart, pulled once; tells which Jicofo hook it has."""
     version = t["jitsiChartVersion"]
-    cache = HERE / ".state" / "charts" / f"opendesk-jitsi-{version}"
+    cache = STATE_ROOT / "charts" / f"opendesk-jitsi-{version}"
     if not (cache / "opendesk-jitsi" / "Chart.yaml").is_file():
         cache.mkdir(parents=True, exist_ok=True)
         sh.run([sh.cfg["HELM"], "pull", sh.cfg["JITSI_CHART"], "--version", version, "--untar", "--untardir", str(cache)])
@@ -945,6 +948,109 @@ def strip_volatile(entries):
     return walk(entries)
 
 
+# ------------------------------------------------------------------ portal tile
+
+
+PORTAL_ENTRY = "synaplan"
+PORTAL_CATEGORY = "od.applications"
+
+
+class Udm:
+    """openDesk's directory (Nubus UDM REST API), as its Administrator."""
+
+    def __init__(self, sh, ns, port):
+        password = b64(sh.kjson("get", "secret", "ums-nubus-credentials", ns=ns), "administrator_password") \
+            or os.environ.get("OPENDESK_ADMINISTRATOR_PASSWORD", "")
+        if not password:
+            raise Stop("openDesk's Administrator password not found (Secret ums-nubus-credentials)",
+                       "Set OPENDESK_ADMINISTRATOR_PASSWORD in your shell.")
+        self.base = f"http://127.0.0.1:{port}/univention/udm"
+        self.auth = {"Authorization": "Basic " + base64.b64encode(f"Administrator:{password}".encode()).decode(),
+                     "Accept": "application/json"}
+
+    def get(self, path):
+        status, body = http("GET", f"{self.base}/{path}", headers=self.auth)
+        if status == 401:
+            raise Stop("openDesk's directory refused the Administrator password from Secret ums-nubus-credentials",
+                       "If you changed it, set OPENDESK_ADMINISTRATOR_PASSWORD in your shell.")
+        return body if status == 200 else None
+
+    def objects(self, kind, query):
+        body = self.get(f"{kind}/?{query}&properties=*") or {}
+        return body.get("_embedded", {}).get("udm:object", [])
+
+    def write(self, method, url, body):
+        headers = dict(self.auth)
+        if method in ("PATCH", "DELETE"):
+            request = urllib.request.Request(url, method="GET", headers=self.auth)
+            with urllib.request.urlopen(request, timeout=30) as response:
+                headers["If-Match"] = response.headers.get("ETag", "*")
+        status, answer = http(method, url, body=body, headers=headers)
+        if status not in (200, 201, 204):
+            raise Stop(f"openDesk's directory: {method} failed (HTTP {status})", str(answer)[:300])
+
+
+def step_portal(sh, t, remove=False):
+    """The Synaplan tile in openDesk's portal and its app menu (category Applications)."""
+    ns = t["namespace"]
+    say("portal: Synaplan tile" + (" removed" if remove else ""))
+    with PortForward(sh, ns, "svc/ums-udm-rest-api", 9979) as port:
+        udm = Udm(sh, ns, port)
+        categories = udm.objects("portals/category", f"filter=cn%3D{PORTAL_CATEGORY}")
+        if not categories:
+            warn(f"openDesk's portal has no category {PORTAL_CATEGORY}; no tile")
+            return
+        category = categories[0]
+        container = category["dn"].split(",", 2)[2]
+        entries = udm.objects("portals/entry", f"filter=cn%3D{PORTAL_ENTRY}")
+        entry_dn = entries[0]["dn"] if entries else f"cn={PORTAL_ENTRY},cn=entry,{container}"
+        listed = category["properties"].get("entries") or []
+        category_url = f"{udm.base}/portals/category/{urllib.parse.quote(category['dn'], safe='')}"
+        if remove:
+            if entry_dn in listed:
+                udm.write("PATCH", category_url, {"properties": {"entries": [e for e in listed if e != entry_dn]}})
+            if entries:
+                udm.write("DELETE", f"{udm.base}/portals/entry/{urllib.parse.quote(entry_dn, safe='')}", None)
+            ok("tile removed")
+            return
+        properties = {
+            "name": PORTAL_ENTRY,
+            "displayName": {"en_US": "Synaplan", "de_DE": "Synaplan"},
+            "description": {"en_US": "AI assistant for your documents and meeting notes",
+                            "de_DE": "KI-Assistent für Ihre Dokumente und Mitschriften"},
+            "link": [["en_US", t["synaplanUrl"]]],
+            "linkTarget": "newwindow",
+            "target": "tab_synaplan",
+            "activated": True,
+            "anonymous": False,
+            "allowedGroups": [],
+        }
+        icon = in_synaplan(sh, ns, web_pod(sh, ns), "curl", "-sf", "-m", "10", "http://127.0.0.1/single_bird.svg", check=False)
+        if icon.returncode == 0 and "<svg" in icon.stdout:
+            properties["icon"] = base64.b64encode(icon.stdout.encode()).decode()
+        if entries:
+            current = entries[0]["properties"]
+            if any(current.get(k) != v for k, v in properties.items() if k != "icon") or \
+                    ("icon" in properties and current.get("icon") != properties["icon"]):
+                udm.write("PATCH", f"{udm.base}/portals/entry/{urllib.parse.quote(entry_dn, safe='')}", {"properties": properties})
+                ok("tile updated")
+            else:
+                ok("tile unchanged")
+        else:
+            udm.write("POST", f"{udm.base}/portals/entry/", {"position": f"cn=entry,{container}", "properties": properties})
+            ok("tile created")
+        if entry_dn not in listed:
+            udm.write("PATCH", category_url, {"properties": {"entries": listed + [entry_dn]}})
+            ok(f"tile added to the portal's {category['properties'].get('displayName', {}).get('en_US', PORTAL_CATEGORY)}")
+
+
+def portal_listed(sh, t):
+    with PortForward(sh, t["namespace"], "svc/ums-udm-rest-api", 9979) as port:
+        udm = Udm(sh, t["namespace"], port)
+        categories = udm.objects("portals/category", f"filter=cn%3D{PORTAL_CATEGORY}")
+        return any(e.startswith(f"cn={PORTAL_ENTRY},") for c in categories for e in c["properties"].get("entries") or [])
+
+
 # ------------------------------------------------------------------ openDesk environment files
 
 
@@ -1090,6 +1196,10 @@ def step_verify(sh, t):
     check("synascriber/assets/jitsi/loader.js" in page, "Jitsi pages load the button script", "./synascriber install (Jitsi step)")
     status, _ = fetch(f"https://{t['jitsiHost']}{SILENT_PATH}")
     check(status == 200, f"the silent sign-in page is served (HTTP {status})", "./synascriber install (Jitsi step)")
+    try:
+        check(portal_listed(sh, t), "Synaplan tile in openDesk's portal", "./synascriber install (portal step)")
+    except Stop as stop:
+        check(False, f"portal tile: {stop}")
     module = sh.kubectl("exec", "deploy/synascriber-transcriber", "--", "wget", "-qO-", f"{t['prosodyUrl']}/synascriber/health",
                         ns=ns, check=False)
     check('"ok":true' in module.stdout.replace(" ", ""), "Prosody module answers: " + (module.stdout.strip() or module.stderr.strip())[:120])
@@ -1158,7 +1268,7 @@ def cmd_check(sh, args):
       1. Synaplan {sh.cfg['SYNAPLAN_VERSION']} at {t['synaplanUrl']}, with its own MariaDB, in namespace {t['namespace']}
       2. speech-to-text: {'your server ' + sh.cfg['STT_URL'] if sh.cfg['STT'] == 'url' else 'synaplan-stt (' + sh.cfg['STT'] + ')'}
       3. the meeting-notes plugin, the transcriber and the Prosody module (release synascriber)
-      4. two Keycloak clients in realm {t['realm']}: synaplan, synascriber
+      4. two Keycloak clients in realm {t['realm']}: synaplan, synascriber, and a Synaplan tile in openDesk's portal
       5. openDesk's Jitsi ({t['jitsiRelease']}): button, sign-in page, Prosody module, bridge to the transcriber
          (Prosody, Jicofo and Jitsi web restart once; running meetings end)
     """))
@@ -1198,6 +1308,7 @@ def cmd_install(sh, args):
     stt_reachable(sh, t)
     step_keycloak(sh, t)
     step_plugin(sh, t)
+    step_portal(sh, t)
     changed = step_jitsi(sh, t, args.yes)
     module_after = (sh.kjson("get", "configmap", "synascriber-prosody", ns=t["namespace"]) or {}).get("data")
     if not changed and module_before and module_before != module_after:
@@ -1236,6 +1347,8 @@ def cmd_uninstall(sh, args):
     if sh.kjson("get", "secret", "synascriber", ns=ns):
         step_jitsi(sh, t, True, remove=True)
     step_keycloak(sh, t, remove=("synascriber", "synaplan") if args.all else ("synascriber",))
+    if args.all:
+        step_portal(sh, t, remove=True)
     state = write_state(sh, t, enabled=False)
     if args.all:
         helmfile(sh, state, "destroy")

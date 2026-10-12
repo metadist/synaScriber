@@ -75,6 +75,8 @@ piece (`verify`) and the addresses you need.
 
 ## 3. Try it
 
+0. The portal (`https://portal.<your domain>`) now has a **Synaplan** tile
+   next to the other apps.
 1. Open `https://meet.<your domain>` in two browsers (or one private
    window), sign in as two different openDesk users, join the same room.
 2. The first person clicks **Meeting notes**, keeps the language and folder,
@@ -94,7 +96,8 @@ No users to test with? openDesk's `Administrator` (password in the Secret
 > switches meeting notes off.
 
 `install` wrote two files into
-`deploy/opendesk/.state/<context>/<namespace>/opendesk/`:
+`~/.local/state/synascriber/<context>/<namespace>/opendesk/` (outside the
+checkout, so they never end up in git; `SYNASCRIBER_STATE` moves the folder):
 
 | File | What it is |
 |------|------------|
@@ -122,7 +125,7 @@ updates"). `./synascriber opendesk-env` writes the files again at any time.
 ./synascriber plan             # what install would change now
 ./synascriber install          # update: after git pull, or after editing synascriber.env
 ./synascriber uninstall        # meeting notes off; Synaplan and its files stay
-./synascriber uninstall --all  # Synaplan too, with its database and uploads
+./synascriber uninstall --all  # Synaplan too, with its database, uploads and portal tile
 ```
 
 Add `--yes` to skip the questions (for scripts), `--env FILE` to use another
@@ -137,8 +140,9 @@ Every step is idempotent: running `install` again only changes what differs.
 | Helm releases | `synaplan-resources` (MariaDB 11.8, generated secrets), `synaplan`, optionally `synaplan-stt`, and `synascriber` (plugin files, transcriber, Prosody module) | openDesk's namespace |
 | Keycloak | clients `synaplan` (Synaplan sign-in) and `synascriber` (the Jitsi button's silent sign-in, PKCE) | realm `opendesk` |
 | Plugin | installs the plugin for Synaplan's first local administrator, adds the transcriber's API key, saves the settings | Synaplan's database |
+| Portal | a **Synaplan** tile in the portal's "Applications" (also in openDesk's app menu), for every signed-in person, with Synaplan's own logo | openDesk's directory (`portals/entry` `synaplan`) |
 | Jitsi | `head.html` (button script) and `static/synascriber-silent.html` in Jitsi web; the module `mod_synascriber` in Prosody; the transcriber URL in Jicofo. Secrets come from Kubernetes Secrets, not from the values | openDesk's `jitsi` release (`helm upgrade`, same chart version) |
-| openDesk files | the two files of section 4 | `deploy/opendesk/.state/` on your machine |
+| openDesk files | the two files of section 4 | `~/.local/state/synascriber/` on your machine |
 
 Members of openDesk's group **Domain Admins** become Synaplan
 administrators. Synaplan's local administrator `synaplan-admin@<domain>`
