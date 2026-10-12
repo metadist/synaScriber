@@ -1,0 +1,219 @@
+{{- if and
+       .Values.transcriber.enabled
+       (not .Values.transcriber.useExternalTranscriber)
+}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "jitsi-meet.transcriber.fullname" . }}
+  labels:
+    {{- include "jitsi-meet.transcriber.labels" . | nindent 4 }}
+    {{- with .Values.transcriber.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.transcriber.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "jitsi-meet.transcriber.selectorLabels" . | nindent 6 }}
+  {{- with .Values.transcriber.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "jitsi-meet.transcriber.selectorLabels" . | nindent 8 }}
+        {{- with (mergeOverwrite (dict) .Values.global.podLabels .Values.transcriber.podLabels) }}
+        {{- toYaml . | nindent 8  }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/transcriber/configmap.yaml") . | sha256sum | quote }}
+        checksum/config-defaults: {{ include (print $.Template.BasePath "/transcriber/configmap-defaults.yaml") . | sha256sum | quote }}
+        checksum/config-extrafiles: {{ include (print $.Template.BasePath "/transcriber/configmap-extrafiles.yaml") . | sha256sum | quote }}
+        checksum/config-scripts: {{ include (print $.Template.BasePath "/transcriber/configmap-scripts.yaml") . | sha256sum | quote }}
+        checksum/secret-jigasi: {{ include (print $.Template.BasePath "/jigasi/secret.yaml") . | sha256sum | quote }}
+        checksum/secret-transcriber: {{ include (print $.Template.BasePath "/transcriber/secret.yaml") . | sha256sum | quote }}
+        {{- with (mergeOverwrite (dict) .Values.global.podAnnotations .Values.transcriber.podAnnotations) }}
+        {{- toYaml . | nindent 8  }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.transcriber.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "jitsi-meet.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.transcriber.automountServiceAccountToken }}
+      securityContext:
+        {{- toYaml .Values.transcriber.podSecurityContext | nindent 8 }}
+      volumes:
+        - name: run
+          emptyDir:
+            sizeLimit: 32Mi
+        - name: tmp
+          emptyDir:
+            # Larger than the 16Mi most components use, from what the
+            # Transcriber needs on real deployments.
+            sizeLimit: 128Mi
+        - name: custom-scripts
+          configMap:
+            defaultMode: 0755
+            name: {{ include "jitsi-meet.transcriber.fullname" . }}-scripts
+        - name: custom-defaults
+          configMap:
+            name: {{ include "jitsi-meet.transcriber.fullname" . }}-defaults
+        - name: transcriber-data
+          {{- if .Values.transcriber.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.transcriber.persistence.existingClaim | default (include "jitsi-meet.transcriber.fullname" .) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- if .Values.transcriber.extraFiles }}
+        - name: extra-files
+          configMap:
+            name: {{ include "jitsi-meet.transcriber.fullname" . }}-extrafiles
+            items:
+              {{- range $i, $f := .Values.transcriber.extraFiles }}
+              - key: extrafile-{{ $i }}
+                path: extrafile-{{ $i }}
+                {{- with $f.mode }}
+                mode: {{ . }}
+                {{- end }}
+              {{- end }}
+        {{- end }}
+        {{- with .Values.transcriber.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      initContainers:
+        - name: wait-for-prosody
+          image: "{{ .Values.transcriber.initContainers.busybox.image }}"
+          imagePullPolicy: {{ pluck "pullPolicy" .Values.transcriber.initContainers.busybox .Values.image | first }}
+          resources:
+            {{- toYaml .Values.transcriber.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.transcriber.initContainers.busybox.securityContext | nindent 12  }}
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for Prosody on port 5280";
+              while ! nc -z -w 1 {{ include "jitsi-meet.xmpp.server" . }} 5280; do
+                sleep 1;
+              done;
+              echo ">> Prosody is available"
+        {{- with .Values.transcriber.extraInitContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}-transcriber
+          image: "{{ .Values.transcriber.image.repository }}:{{ .Values.transcriber.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ pluck "pullPolicy" .Values.transcriber.image .Values.image | first }}
+          securityContext:
+            {{- toYaml .Values.transcriber.securityContext | nindent 12 }}
+          envFrom:
+            - secretRef:
+                name: {{ include "jitsi-meet.jigasi.secretName" . }}
+            - secretRef:
+                name: {{ include "jitsi-meet.transcriber.secretName" . }}
+            - configMapRef:
+                name: {{ include "jitsi-meet.common" . }}
+            - configMapRef:
+                name: {{ include "jitsi-meet.transcriber.fullname" . }}
+            {{- range .Values.transcriber.extraEnvFrom }}
+            - {{  tpl (toYaml .) $ | indent 14 | trim }}
+            {{- end }}
+            {{- if .Values.global.releaseSecretsOverride.enabled }}
+            {{-   range .Values.global.releaseSecretsOverride.extraEnvFrom }}
+            - {{    tpl (toYaml .) $ | indent 14 | trim }}
+            {{-   end }}
+            {{- end }}
+          ports:
+            # The health port the probes target.
+            - name: http
+              containerPort: 8788
+              protocol: TCP
+          {{- with .Values.transcriber.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.transcriber.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.transcriber.resources | nindent 12 }}
+          volumeMounts:
+            - name: run
+              mountPath: /run
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.transcriber.custom.scripts._config }}
+            - name: custom-scripts
+              mountPath: /etc/s6-overlay/scripts/config
+              subPath: config
+            {{- end }}
+            {{- if .Values.transcriber.custom.defaults._autoscaler_sidecar_config }}
+            - name: custom-defaults
+              mountPath: /defaults/autoscaler-sidecar.config
+              subPath: autoscaler-sidecar.config
+            {{- end }}
+            {{- if .Values.transcriber.custom.defaults._logging_properties }}
+            - name: custom-defaults
+              mountPath: /defaults/logging.properties
+              subPath: logging.properties
+            {{- end }}
+            {{- if .Values.transcriber.custom.defaults._sip_communicator_properties }}
+            - name: custom-defaults
+              mountPath: /defaults/sip-communicator.properties
+              subPath: sip-communicator.properties
+            {{- end }}
+            {{- if .Values.transcriber.custom.defaults._sipserver_sip_communicator_properties }}
+            - name: custom-defaults
+              mountPath: /defaults/sipserver-sip-communicator.properties
+              subPath: sipserver-sip-communicator.properties
+            {{- end }}
+            {{- if .Values.transcriber.custom.defaults._transcriber_sip_communicator_properties }}
+            - name: custom-defaults
+              mountPath: /defaults/transcriber-sip-communicator.properties
+              subPath: transcriber-sip-communicator.properties
+            {{- end }}
+            {{- if .Values.transcriber.custom.defaults._xmpp_sip_communicator_properties }}
+            - name: custom-defaults
+              mountPath: /defaults/xmpp-sip-communicator.properties
+              subPath: xmpp-sip-communicator.properties
+            {{- end }}
+            # must always exist, even without persistence
+            - name: transcriber-data
+              mountPath: /tmp/transcripts
+            {{- range $i, $f := .Values.transcriber.extraFiles }}
+            - name: extra-files
+              mountPath: {{ $f.path }}
+              subPath: extrafile-{{ $i }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.transcriber.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+
+      {{- with .Values.transcriber.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.transcriber.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.transcriber.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

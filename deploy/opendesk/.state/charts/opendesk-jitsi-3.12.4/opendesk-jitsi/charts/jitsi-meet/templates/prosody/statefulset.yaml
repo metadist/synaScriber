@@ -1,0 +1,285 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "jitsi-meet.prosody.fullname" . }}
+  labels:
+    {{- include "jitsi-meet.prosody.labels" . | nindent 4 }}
+    {{- with .Values.prosody.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.prosody.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: 1
+  serviceName: {{ include "jitsi-meet.prosody.fullname" . }}
+  selector:
+    matchLabels:
+      {{- include "jitsi-meet.prosody.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "jitsi-meet.prosody.selectorLabels" . | nindent 8 }}
+        {{- with (mergeOverwrite (dict) .Values.global.podLabels .Values.prosody.podLabels) }}
+        {{- toYaml . | nindent 8  }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/prosody/configmap.yaml") . | sha256sum | quote }}
+        checksum/config-coturn: {{ include (print $.Template.BasePath "/prosody/configmap-coturn.yaml") . | sha256sum | quote }}
+        checksum/config-defaults: {{ include (print $.Template.BasePath "/prosody/configmap-defaults.yaml") . | sha256sum | quote }}
+        checksum/config-extrafiles: {{ include (print $.Template.BasePath "/prosody/configmap-extrafiles.yaml") . | sha256sum | quote }}
+        checksum/config-scripts: {{ include (print $.Template.BasePath "/prosody/configmap-scripts.yaml") . | sha256sum | quote }}
+        checksum/secret: {{ include (print $.Template.BasePath "/prosody/secret.yaml") . | sha256sum | quote }}
+        checksum/secret-coturn: {{ include (print $.Template.BasePath "/coturn/secret.yaml") . | sha256sum | quote }}
+        checksum/secret-jibri-recorder: {{ include (print $.Template.BasePath "/jibri/secret-recorder.yaml") . | sha256sum | quote }}
+        checksum/secret-jibri-xmpp: {{ include (print $.Template.BasePath "/jibri/secret-xmpp.yaml") . | sha256sum | quote }}
+        checksum/secret-jicofo: {{ include (print $.Template.BasePath "/jicofo/secret.yaml") . | sha256sum | quote }}
+        checksum/secret-jigasi: {{ include (print $.Template.BasePath "/jigasi/secret.yaml") . | sha256sum | quote }}
+        checksum/secret-jvb: {{ include (print $.Template.BasePath "/jvb/secret.yaml") . | sha256sum | quote }}
+        checksum/secret-transcriber: {{ include (print $.Template.BasePath "/transcriber/secret.yaml") . | sha256sum | quote }}
+        {{- with (mergeOverwrite (dict) .Values.global.podAnnotations .Values.prosody.podAnnotations) }}
+        {{- toYaml . | nindent 8  }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.prosody.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "jitsi-meet.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.prosody.automountServiceAccountToken }}
+      securityContext:
+        {{- toYaml .Values.prosody.podSecurityContext | nindent 8 }}
+      volumes:
+        - name: run
+          emptyDir:
+            sizeLimit: 16Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+        - name: custom-scripts
+          configMap:
+            defaultMode: 0755
+            name: {{ include "jitsi-meet.prosody.fullname" . }}-scripts
+        - name: custom-defaults
+          configMap:
+            name: {{ include "jitsi-meet.prosody.fullname" . }}-defaults
+        {{- if not .Values.prosody.persistence.enabled }}
+        - name: prosody-data
+          emptyDir: {}
+        {{- else if .Values.prosody.persistence.existingClaim }}
+        - name: prosody-data
+          persistentVolumeClaim:
+            claimName: {{ .Values.prosody.persistence.existingClaim }}
+        {{- end }}
+        {{- /*
+             With persistence enabled and no existingClaim, the prosody-data
+             volume comes from the volumeClaimTemplate below, which the
+             StatefulSet controller adds to every pod itself.
+        */}}
+        {{- if .Values.prosody.metrics.enabled }}
+        - name: metrics-config
+          configMap:
+            name: {{ include "jitsi-meet.prosody.fullname" . }}-metrics
+            defaultMode: 0644
+        {{- end }}
+        {{- if .Values.prosody.extraFiles }}
+        - name: extra-files
+          configMap:
+            name: {{ include "jitsi-meet.prosody.fullname" . }}-extrafiles
+            items:
+              {{- range $i, $f := .Values.prosody.extraFiles }}
+              - key: extrafile-{{ $i }}
+                path: extrafile-{{ $i }}
+                {{- with $f.mode }}
+                mode: {{ . }}
+                {{- end }}
+              {{- end }}
+        {{- end }}
+        {{- with .Values.prosody.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.prosody.extraInitContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.prosody.image.repository }}:{{ .Values.prosody.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ pluck "pullPolicy" .Values.prosody.image .Values.image | first }}
+          securityContext:
+            {{- toYaml .Values.prosody.securityContext | nindent 12 }}
+          envFrom:
+            {{- if or
+                   .Values.prosody.jwt.secret
+                   .Values.prosody.jwt.existingSecretName
+            }}
+            - secretRef:
+                name: {{ include "jitsi-meet.prosody.secretName" . }}
+            {{- end }}
+            - secretRef:
+                name: {{ include "jitsi-meet.jicofo.secretName" . }}
+            - secretRef:
+                name: {{ include "jitsi-meet.jvb.secretName" . }}
+            {{- if .Values.coturn.enabled }}
+            - secretRef:
+                name: {{ include "jitsi-meet.coturn.secretName" . }}
+            - configMapRef:
+                name: {{ include "jitsi-meet.prosody.fullname" . }}-coturn
+            {{- end }}
+            {{- if .Values.jibri.enabled }}
+            - secretRef:
+                name: {{ include "jitsi-meet.jibri.xmppSecretName" . }}
+            - secretRef:
+                name: {{ include "jitsi-meet.jibri.recorderSecretName" . }}
+            {{- end }}
+            {{- if or
+                   .Values.jigasi.enabled
+                   .Values.transcriber.enabled
+            }}
+            - secretRef:
+                name: {{ include "jitsi-meet.jigasi.secretName" . }}
+            {{- end }}
+            {{- if .Values.transcriber.enabled }}
+            - secretRef:
+                name: {{ include "jitsi-meet.transcriber.secretName" . }}
+            {{- end }}
+            - configMapRef:
+                name: {{ include "jitsi-meet.common" . }}
+            - configMapRef:
+                name: {{ include "jitsi-meet.prosody.fullname" . }}
+            {{- range .Values.prosody.extraEnvFrom }}
+            - {{  tpl (toYaml .) $ | indent 14 | trim }}
+            {{- end }}
+            {{- if .Values.global.releaseSecretsOverride.enabled }}
+            {{-   range .Values.global.releaseSecretsOverride.extraEnvFrom }}
+            - {{    tpl (toYaml .) $ | indent 14 | trim }}
+            {{-   end }}
+            {{- end }}
+          env:
+            {{- range .Values.prosody.extraSecrets }}
+            - {{  tpl (toYaml .) $ | indent 14 | trim }}
+            {{- end }}
+            {{- if .Values.prosody.metrics.enabled }}
+            - name: PROSODY_ENABLE_METRICS
+              value: "true"
+            - name: PROSODY_METRICS_ALLOWED_CIDR
+              value: "{{ .Values.prosody.metrics.allowed_cidr }}"
+            {{- end }}
+          ports:
+            - name: xmpp-c2s
+              containerPort: {{ index .Values.prosody.service.ports "xmpp-c2s" }}
+              protocol: TCP
+            - name: xmpp-s2s
+              containerPort: {{ index .Values.prosody.service.ports "xmpp-s2s" }}
+              protocol: TCP
+            - name: xmpp-component
+              containerPort: {{ index .Values.prosody.service.ports "xmpp-component" }}
+              protocol: TCP
+            - name: bosh-insecure
+              containerPort: {{ index .Values.prosody.service.ports "bosh-insecure" }}
+              protocol: TCP
+            - name: bosh-secure
+              containerPort: {{ index .Values.prosody.service.ports "bosh-secure" }}
+              protocol: TCP
+          {{- with .Values.prosody.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.prosody.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.prosody.resources | nindent 12 }}
+          volumeMounts:
+            - name: run
+              mountPath: /run
+            - name: tmp
+              mountPath: /tmp
+            # Prosody's data path
+            - name: prosody-data
+              mountPath: /var/lib/prosody
+            {{- if .Values.prosody.custom.scripts._config }}
+            - name: custom-scripts
+              mountPath: /etc/s6-overlay/scripts/config
+              subPath: config
+            {{- end }}
+            {{- if .Values.prosody.custom.defaults._prosody_cfg_lua }}
+            - name: custom-defaults
+              mountPath: /defaults/prosody.cfg.lua
+              subPath: prosody.cfg.lua
+            {{- end }}
+            {{- if .Values.prosody.custom.defaults._saslauthd_conf }}
+            - name: custom-defaults
+              mountPath: /defaults/saslauthd.conf
+              subPath: saslauthd.conf
+            {{- end }}
+            {{- if .Values.prosody.custom.defaults._jitsi_meet_cfg_lua }}
+            - name: custom-defaults
+              mountPath: /defaults/conf.d/jitsi-meet.cfg.lua
+              subPath: jitsi-meet.cfg.lua
+            {{- end }}
+            {{- range $i, $f := .Values.prosody.extraFiles }}
+            - name: extra-files
+              mountPath: {{ $f.path }}
+              subPath: extrafile-{{ $i }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.prosody.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+
+        {{- if .Values.prosody.metrics.enabled }}
+        - name: metrics
+          image: "{{ .Values.prosody.metrics.image.repository }}:{{ .Values.prosody.metrics.image.tag }}"
+          imagePullPolicy: {{ pluck "pullPolicy" .Values.prosody.metrics.image .Values.image | first }}
+          args: [--config=/etc/otel-collector-config.yaml]
+          securityContext:
+            {{- toYaml .Values.prosody.metrics.securityContext | nindent 12 }}
+          ports:
+            - name: metrics
+              containerPort: 8889
+              protocol: TCP
+          volumeMounts:
+            - name: metrics-config
+              mountPath: /etc/otel-collector-config.yaml
+              subPath: otel-collector-config.yaml
+              readOnly: true
+        {{- end }}
+
+      {{- with .Values.prosody.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.prosody.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.prosody.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+  {{- if and
+         .Values.prosody.persistence.enabled
+         (not .Values.prosody.persistence.existingClaim)
+  }}
+  volumeClaimTemplates:
+    - metadata:
+        name: prosody-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        volumeMode: Filesystem
+        resources:
+          requests:
+            storage: {{ .Values.prosody.persistence.size }}
+        {{- with .Values.prosody.persistence.storageClassName }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+  {{- end }}

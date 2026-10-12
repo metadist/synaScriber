@@ -1,0 +1,127 @@
+{{- if .Values.etherpad.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "jitsi-meet.etherpad.fullname" . }}
+  labels:
+    {{- include "jitsi-meet.etherpad.labels" . | nindent 4 }}
+    {{- with .Values.etherpad.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.etherpad.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "jitsi-meet.etherpad.selectorLabels" . | nindent 6 }}
+  {{- with .Values.etherpad.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "jitsi-meet.etherpad.selectorLabels" . | nindent 8 }}
+        {{- with (mergeOverwrite (dict) .Values.global.podLabels .Values.etherpad.podLabels) }}
+        {{- toYaml . | nindent 8  }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/etherpad/configmap.yaml") . | sha256sum | quote }}
+        checksum/config-extrafiles: {{ include (print $.Template.BasePath "/etherpad/configmap-extrafiles.yaml") . | sha256sum | quote }}
+        {{- with (mergeOverwrite (dict) .Values.global.podAnnotations .Values.etherpad.podAnnotations) }}
+        {{- toYaml . | nindent 8  }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.etherpad.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "jitsi-meet.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.etherpad.automountServiceAccountToken }}
+      securityContext:
+        {{- toYaml .Values.etherpad.podSecurityContext | nindent 8 }}
+      volumes:
+        {{- if .Values.etherpad.extraFiles }}
+        - name: extra-files
+          configMap:
+            name: {{ include "jitsi-meet.etherpad.fullname" . }}-extrafiles
+            items:
+              {{- range $i, $f := .Values.etherpad.extraFiles }}
+              - key: extrafile-{{ $i }}
+                path: extrafile-{{ $i }}
+                {{- with $f.mode }}
+                mode: {{ . }}
+                {{- end }}
+              {{- end }}
+        {{- end }}
+        {{- with .Values.etherpad.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.etherpad.extraInitContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.etherpad.image.repository }}:{{ .Values.etherpad.image.tag }}"
+          imagePullPolicy: {{ pluck "pullPolicy" .Values.etherpad.image .Values.image | first }}
+          securityContext:
+            {{- toYaml .Values.etherpad.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.etherpad.service.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "jitsi-meet.common" . }}
+            - configMapRef:
+                name: {{ include "jitsi-meet.etherpad.fullname" . }}
+            {{- range .Values.etherpad.extraEnvFrom }}
+            - {{  tpl (toYaml .) $ | indent 14 | trim }}
+            {{- end }}
+            {{- if .Values.global.releaseSecretsOverride.enabled }}
+            {{-   range .Values.global.releaseSecretsOverride.extraEnvFrom }}
+            - {{    tpl (toYaml .) $ | indent 14 | trim }}
+            {{-   end }}
+            {{- end }}
+          {{- with .Values.etherpad.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.etherpad.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.etherpad.resources | nindent 12 }}
+          volumeMounts:
+            {{- range $i, $f := .Values.etherpad.extraFiles }}
+            - name: extra-files
+              mountPath: {{ $f.path }}
+              subPath: extrafile-{{ $i }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.etherpad.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+
+      {{- with .Values.etherpad.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.etherpad.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.etherpad.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

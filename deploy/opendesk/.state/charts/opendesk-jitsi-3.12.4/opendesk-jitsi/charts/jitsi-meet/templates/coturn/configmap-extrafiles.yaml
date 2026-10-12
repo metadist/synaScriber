@@ -1,0 +1,16 @@
+{{- if and
+       .Values.coturn.enabled
+       .Values.coturn.extraFiles
+}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "jitsi-meet.coturn.fullname" . }}-extrafiles
+  labels:
+    {{- include "jitsi-meet.coturn.labels" . | nindent 4 }}
+data:
+  {{- range $i, $f := .Values.coturn.extraFiles }}
+  extrafile-{{ $i }}: |
+    {{- $f.content | nindent 4 }}
+  {{- end }}
+{{- end }}

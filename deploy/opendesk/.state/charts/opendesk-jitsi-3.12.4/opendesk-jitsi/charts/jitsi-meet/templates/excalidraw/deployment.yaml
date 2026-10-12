@@ -1,0 +1,130 @@
+{{- if .Values.excalidraw.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "jitsi-meet.excalidraw.fullname" . }}
+  labels:
+    {{- include "jitsi-meet.excalidraw.labels" . | nindent 4 }}
+    {{- with .Values.excalidraw.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.excalidraw.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "jitsi-meet.excalidraw.selectorLabels" . | nindent 6 }}
+  {{- with .Values.excalidraw.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "jitsi-meet.excalidraw.selectorLabels" . | nindent 8 }}
+        {{- with (mergeOverwrite (dict) .Values.global.podLabels .Values.excalidraw.podLabels) }}
+        {{- toYaml . | nindent 8  }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/excalidraw/configmap.yaml") . | sha256sum | quote }}
+        checksum/config-extrafiles: {{ include (print $.Template.BasePath "/excalidraw/configmap-extrafiles.yaml") . | sha256sum | quote }}
+        {{- with (mergeOverwrite (dict) .Values.global.podAnnotations .Values.excalidraw.podAnnotations) }}
+        {{- toYaml . | nindent 8  }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.excalidraw.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "jitsi-meet.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.excalidraw.automountServiceAccountToken }}
+      securityContext:
+        {{- toYaml .Values.excalidraw.podSecurityContext | nindent 8 }}
+      volumes:
+        {{- if .Values.excalidraw.extraFiles }}
+        - name: extra-files
+          configMap:
+            name: {{ include "jitsi-meet.excalidraw.fullname" . }}-extrafiles
+            items:
+              {{- range $i, $f := .Values.excalidraw.extraFiles }}
+              - key: extrafile-{{ $i }}
+                path: extrafile-{{ $i }}
+                {{- with $f.mode }}
+                mode: {{ . }}
+                {{- end }}
+              {{- end }}
+        {{- end }}
+        {{- with .Values.excalidraw.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.excalidraw.extraInitContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.excalidraw.image.repository }}:{{ .Values.excalidraw.image.tag }}"
+          imagePullPolicy: {{ pluck "pullPolicy" .Values.excalidraw.image .Values.image | first }}
+          securityContext:
+            {{- toYaml .Values.excalidraw.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.excalidraw.service.port }}
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "jitsi-meet.common" . }}
+            - configMapRef:
+                name: {{ include "jitsi-meet.excalidraw.fullname" . }}
+            {{- range .Values.excalidraw.extraEnvFrom }}
+            - {{  tpl (toYaml .) $ | indent 14 | trim }}
+            {{- end }}
+            {{- if .Values.global.releaseSecretsOverride.enabled }}
+            {{-   range .Values.global.releaseSecretsOverride.extraEnvFrom }}
+            - {{    tpl (toYaml .) $ | indent 14 | trim }}
+            {{-   end }}
+            {{- end }}
+          {{- with .Values.excalidraw.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.excalidraw.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.excalidraw.resources | nindent 12 }}
+          volumeMounts:
+            {{- range $i, $f := .Values.excalidraw.extraFiles }}
+            - name: extra-files
+              mountPath: {{ $f.path }}
+              subPath: extrafile-{{ $i }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.excalidraw.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+
+      {{- with .Values.excalidraw.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.excalidraw.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.excalidraw.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

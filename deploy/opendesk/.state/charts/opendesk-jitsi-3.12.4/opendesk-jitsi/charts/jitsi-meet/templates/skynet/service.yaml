@@ -1,0 +1,24 @@
+{{- if and
+       .Values.skynet.enabled
+       (not .Values.skynet.useExternalSkynet)
+}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "jitsi-meet.skynet.fullname" . }}
+  labels:
+    {{- include "jitsi-meet.skynet.labels" . | nindent 4 }}
+  {{- with .Values.skynet.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.skynet.service.type }}
+  ports:
+    - name: http
+      protocol: TCP
+      port: {{ .Values.skynet.service.port }}
+      targetPort: http
+  selector:
+    {{- include "jitsi-meet.skynet.selectorLabels" . | nindent 4 }}
+{{- end }}

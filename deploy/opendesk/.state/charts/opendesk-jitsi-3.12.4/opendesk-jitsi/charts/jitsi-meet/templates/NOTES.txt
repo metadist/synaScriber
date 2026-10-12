@@ -1,0 +1,29 @@
+{{- if or .Values.web.gateway.enabled .Values.web.ingress.enabled -}}
+🚀 Jitsi Meet is being deployed!
+
+Your application will be available at:
+{{ include "jitsi-meet.publicURL" . }}
+
+It may take a few minutes for the LoadBalancer IP to be assigned
+and for DNS to propagate.
+
+{{- else -}}
+🔧 To access your application, run:
+
+{{-   if contains "NodePort" .Values.web.service.type }}
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "jitsi-meet.web.fullname" . }})
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+
+  And visit: http://$NODE_IP:$NODE_PORT
+
+{{-   else if contains "LoadBalancer" .Values.web.service.type }}
+  kubectl get svc --namespace {{ .Release.Namespace }} {{ include "jitsi-meet.web.fullname" . }}
+
+  And wait for the EXTERNAL-IP to be assigned, then visit that IP in your browser
+
+{{-   else if contains "ClusterIP" .Values.web.service.type }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "jitsi-meet.web.fullname" . }} 8080:{{ .Values.web.service.port }}
+
+  And visit: http://127.0.0.1:8080
+{{-   end }}
+{{- end }}

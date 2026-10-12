@@ -1,0 +1,234 @@
+{{- if and
+       .Values.jibri.enabled
+       (not .Values.jibri.useExternalJibri)
+}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "jitsi-meet.jibri.fullname" . }}
+  labels:
+    {{- include "jitsi-meet.jibri.labels" . | nindent 4 }}
+    {{- with .Values.jibri.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.jibri.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.jibri.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "jitsi-meet.jibri.selectorLabels" . | nindent 6 }}
+  {{- with .Values.jibri.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "jitsi-meet.jibri.selectorLabels" . | nindent 8 }}
+        {{- with (mergeOverwrite (dict) .Values.global.podLabels .Values.jibri.podLabels) }}
+        {{- toYaml . | nindent 8  }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/jibri/configmap.yaml") . | sha256sum | quote }}
+        checksum/config-defaults: {{ include (print $.Template.BasePath "/jibri/configmap-defaults.yaml") . | sha256sum | quote }}
+        checksum/config-extrafiles: {{ include (print $.Template.BasePath "/jibri/configmap-extrafiles.yaml") . | sha256sum | quote }}
+        checksum/config-other: {{ include (print $.Template.BasePath "/jibri/configmap-other.yaml") . | sha256sum | quote }}
+        checksum/config-scripts: {{ include (print $.Template.BasePath "/jibri/configmap-scripts.yaml") . | sha256sum | quote }}
+        checksum/secret-xmpp: {{ include (print $.Template.BasePath "/jibri/secret-xmpp.yaml") . | sha256sum | quote }}
+        checksum/secret-recorder: {{ include (print $.Template.BasePath "/jibri/secret-recorder.yaml") . | sha256sum | quote }}
+        {{- with (mergeOverwrite (dict) .Values.global.podAnnotations .Values.jibri.podAnnotations) }}
+        {{- toYaml . | nindent 8  }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.jibri.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "jitsi-meet.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.jibri.automountServiceAccountToken }}
+      securityContext:
+        {{- toYaml .Values.jibri.podSecurityContext | nindent 8 }}
+      volumes:
+        # Jibri needs far more scratch space than the other components, which
+        # get by on 16Mi. Both limits come from what Jibri uses on real
+        # deployments, so don't shrink them to match the others.
+        - name: run
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: custom-scripts
+          configMap:
+            defaultMode: 0755
+            name: {{ include "jitsi-meet.jibri.fullname" . }}-scripts
+        - name: custom-defaults
+          configMap:
+            name: {{ include "jitsi-meet.jibri.fullname" . }}-defaults
+        - name: custom-other
+          configMap:
+            defaultMode: 0755
+            name: {{ include "jitsi-meet.jibri.fullname" . }}-other
+        - name: jibri-data
+          {{- if .Values.jibri.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.jibri.persistence.existingClaim | default (include "jitsi-meet.jibri.fullname" .) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- if .Values.jibri.shm.enabled }}
+        - name: dev-shm
+          {{- if .Values.jibri.shm.useHost }}
+          hostPath:
+            path: /dev/shm
+          {{- else }}
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ .Values.jibri.shm.size | default "2Gi" | quote }}
+          {{- end }}
+        {{- end }}
+        {{- if .Values.jibri.extraFiles }}
+        - name: extra-files
+          configMap:
+            name: {{ include "jitsi-meet.jibri.fullname" . }}-extrafiles
+            items:
+              {{- range $i, $f := .Values.jibri.extraFiles }}
+              - key: extrafile-{{ $i }}
+                path: extrafile-{{ $i }}
+                {{- with $f.mode }}
+                mode: {{ . }}
+                {{- end }}
+              {{- end }}
+        {{- end }}
+        {{- with .Values.jibri.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.jibri.extraInitContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.jibri.image.repository }}:{{ .Values.jibri.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ pluck "pullPolicy" .Values.jibri.image .Values.image | first }}
+          securityContext:
+            {{- toYaml .Values.jibri.securityContext | nindent 12 }}
+          envFrom:
+            - secretRef:
+                name: {{ include "jitsi-meet.jibri.xmppSecretName" . }}
+            - secretRef:
+                name: {{ include "jitsi-meet.jibri.recorderSecretName" . }}
+            - configMapRef:
+                name: {{ include "jitsi-meet.common" . }}
+            - configMapRef:
+                name: {{ include "jitsi-meet.jibri.fullname" . }}
+            {{- range .Values.jibri.extraEnvFrom }}
+            - {{  tpl (toYaml .) $ | indent 14 | trim }}
+            {{- end }}
+            {{- if .Values.global.releaseSecretsOverride.enabled }}
+            {{-   range .Values.global.releaseSecretsOverride.extraEnvFrom }}
+            - {{    tpl (toYaml .) $ | indent 14 | trim }}
+            {{-   end }}
+            {{- end }}
+          env:
+            # Set Jibri Instance ID based on pod name:
+            - name: JIBRI_INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            {{- range .Values.jibri.extraSecrets }}
+            - {{  tpl (toYaml .) $ | indent 14 | trim }}
+            {{- end }}
+          ports:
+            - name: http-internal
+              containerPort: 3333
+              protocol: TCP
+            - name: http-api
+              containerPort: 2222
+              protocol: TCP
+          {{- with .Values.jibri.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.jibri.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.jibri.resources | nindent 12 }}
+          volumeMounts:
+            - name: run
+              mountPath: /run
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.jibri.custom.scripts._config }}
+            - name: custom-scripts
+              mountPath: /etc/s6-overlay/scripts/config
+              subPath: config
+            {{- end }}
+            {{- if .Values.jibri.custom.defaults._jibri_conf }}
+            - name: custom-defaults
+              mountPath: /defaults/jibri.conf
+              subPath: jibri.conf
+            {{- end }}
+            {{- if .Values.jibri.custom.defaults._logging_properties }}
+            - name: custom-defaults
+              mountPath: /defaults/logging.properties
+              subPath: logging.properties
+            {{- end }}
+            {{- if .Values.jibri.custom.defaults._autoscaler_sidecar_config }}
+            - name: custom-defaults
+              mountPath: /defaults/autoscaler-sidecar.config
+              subPath: autoscaler-sidecar.config
+            {{- end }}
+            {{- if .Values.jibri.custom.defaults._xmpp_conf }}
+            - name: custom-defaults
+              mountPath: /defaults/xmpp.conf
+              subPath: xmpp.conf
+            {{- end }}
+            {{- if .Values.jibri.custom.defaults._xorg_video_dummy_conf }}
+            - name: custom-defaults
+              mountPath: /defaults/xorg-video-dummy.conf
+              subPath: xorg-video-dummy.conf
+            {{- end }}
+            {{- if .Values.jibri.custom.other._finalize_sh }}
+            - name: custom-other
+              mountPath: /config/finalize.sh
+              subPath: finalize.sh
+            {{- end }}
+            - name: jibri-data
+              mountPath: /storage
+            {{- if .Values.jibri.shm.enabled }}
+            - name: dev-shm
+              mountPath: /dev/shm
+            {{- end }}
+            {{- range $i, $f := .Values.jibri.extraFiles }}
+            - name: extra-files
+              mountPath: {{ $f.path }}
+              subPath: extrafile-{{ $i }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.jibri.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+
+      {{- with .Values.jibri.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.jibri.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.jibri.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

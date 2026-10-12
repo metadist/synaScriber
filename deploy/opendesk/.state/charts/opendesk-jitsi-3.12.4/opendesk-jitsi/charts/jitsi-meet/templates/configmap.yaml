@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "jitsi-meet.common" . }}
+  labels:
+    {{- include "jitsi-meet.labels" . | nindent 4 }}
+data:
+  # /run is an emptyDir, which Kubernetes creates world-writable
+  S6_YES_I_WANT_A_WORLD_WRITABLE_RUN_BECAUSE_KUBERNETES: "1"
+  ENABLE_AUTH: {{ .Values.enableAuth | ternary "true" "false" | quote }}
+  ENABLE_GUESTS: {{ .Values.enableGuests | ternary "true" "false" | quote }}
+  PUBLIC_URL: {{ include "jitsi-meet.publicURL" . | quote }}
+  TZ: {{ .Values.tz | quote }}
+  XMPP_DOMAIN: {{ include "jitsi-meet.xmpp.domain" . | quote }}
+  XMPP_MUC_DOMAIN: {{ .Values.xmpp.mucDomain | default (printf "muc.%s" (include "jitsi-meet.xmpp.domain" .)) | quote }}
+  XMPP_AUTH_DOMAIN: {{ .Values.xmpp.authDomain | default (printf "auth.%s" (include "jitsi-meet.xmpp.domain" .)) | quote }}
+  XMPP_GUEST_DOMAIN: {{ .Values.xmpp.guestDomain | default (printf "guest.%s" (include "jitsi-meet.xmpp.domain" .)) | quote }}
+  XMPP_HIDDEN_DOMAIN: {{ .Values.xmpp.hiddenDomain | default (printf "hidden.%s" (include "jitsi-meet.xmpp.domain" .)) | quote }}
+  XMPP_INTERNAL_MUC_DOMAIN: {{ .Values.xmpp.internalMucDomain | default (printf "internal-muc.%s" (include "jitsi-meet.xmpp.domain" .)) | quote }}
+
+  {{- if .Values.websockets.xmpp.enabled }}
+  ENABLE_XMPP_WEBSOCKET: "true"
+  {{- else }}
+  ENABLE_XMPP_WEBSOCKET: "false"
+  {{- end }}
+
+  {{- if .Values.octo.enabled }}
+  ENABLE_OCTO: "true"
+  DEPLOYMENTINFO_REGION: "all"
+  {{- end }}
+
+  {{- if .Values.jibri.enabled }}
+  {{-   if .Values.jibri.recording }}
+  ENABLE_RECORDING: "true"
+  ENABLE_FILE_RECORDING_SERVICE_SHARING: "true"
+  {{-   end }}
+  {{-   if .Values.jibri.livestreaming }}
+  ENABLE_LIVESTREAMING: "true"
+  {{-   end }}
+  {{- end }}
+
+  {{- range $key, $value := .Values.extraCommonEnvs }}
+  {{-   if not (kindIs "invalid" $value) }}
+  {{      $key }}: {{ tpl (toString $value) $ | quote }}
+  {{-   end }}
+  {{- end }}

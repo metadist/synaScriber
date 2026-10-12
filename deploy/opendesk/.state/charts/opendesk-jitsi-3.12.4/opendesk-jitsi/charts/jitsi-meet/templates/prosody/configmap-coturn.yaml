@@ -1,0 +1,20 @@
+{{- if .Values.coturn.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "jitsi-meet.prosody.fullname" . }}-coturn
+  labels:
+    {{- include "jitsi-meet.prosody.labels" . | nindent 4 }}
+data:
+  {{- if has "udp" (splitList "," (include "jitsi-meet.coturn.transports" .)) }}
+  STUN_HOST: {{ .Values.turnHost | quote }}
+  STUN_PORT: {{ .Values.coturn.service.ports.turn | quote }}
+  {{- end }}
+  TURN_HOST: {{ .Values.turnHost | quote }}
+  TURN_PORT: {{ .Values.coturn.service.ports.turn | quote }}
+  TURN_TRANSPORT: {{ include "jitsi-meet.coturn.transports" . | quote }}
+  {{- if .Values.coturn.turns.enabled }}
+  TURNS_HOST: {{ .Values.turnHost | quote }}
+  TURNS_PORT: {{ .Values.coturn.service.ports.turns | quote }}
+  {{- end }}
+{{- end }}

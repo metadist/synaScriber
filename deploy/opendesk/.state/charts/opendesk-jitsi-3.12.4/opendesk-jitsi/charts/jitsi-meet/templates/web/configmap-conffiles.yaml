@@ -1,0 +1,81 @@
+{{- if or
+       .Values.web.custom.configs._custom_config_js
+       .Values.web.custom.configs._custom_interface_config_js
+       .Values.web.custom.defaults._default
+       .Values.web.custom.defaults._ffdhe2048_txt
+       .Values.web.custom.defaults._interface_config_js
+       .Values.web.custom.defaults._meet_conf
+       .Values.web.custom.defaults._nginx_conf
+       .Values.web.custom.defaults._settings_config_js
+       .Values.web.custom.defaults._ssl_conf
+       .Values.web.custom.defaults._system_config_js
+       .Values.coturn.enabled
+}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "jitsi-meet.web.fullname" . }}-conffiles
+  labels:
+    {{- include "jitsi-meet.web.labels" . | nindent 4 }}
+data:
+  {{- if or
+         .Values.web.custom.configs._custom_config_js
+         .Values.coturn.enabled
+  }}
+  custom-config.js: |
+    {{- if and
+           .Values.coturn.enabled
+           (has "udp" (splitList "," (include "jitsi-meet.coturn.transports" .)))
+    }}
+    config.useTurnUdp=true;
+    {{- end }}
+    {{- with .Values.web.custom.configs._custom_config_js }}
+    {{- . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+
+  {{- with .Values.web.custom.configs._custom_interface_config_js }}
+  custom-interface_config.js: |
+    {{- . | nindent 4 }}
+  {{- end }}
+
+  {{- with .Values.web.custom.defaults._default }}
+  default: |
+    {{- . | nindent 4 }}
+  {{- end }}
+
+  {{- with .Values.web.custom.defaults._ffdhe2048_txt }}
+  ffdhe2048.txt: |
+    {{- . | nindent 4 }}
+  {{- end }}
+
+  {{- with .Values.web.custom.defaults._interface_config_js }}
+  interface_config.js: |
+    {{- . | nindent 4 }}
+  {{- end }}
+
+  {{- with .Values.web.custom.defaults._meet_conf }}
+  meet.conf: |
+    {{- . | nindent 4 }}
+  {{- end }}
+
+  {{- with .Values.web.custom.defaults._nginx_conf }}
+  nginx.conf: |
+    {{- . | nindent 4 }}
+  {{- end }}
+
+  {{- with .Values.web.custom.defaults._settings_config_js }}
+  settings-config.js: |
+    {{- . | nindent 4 }}
+  {{- end }}
+
+  {{- with .Values.web.custom.defaults._ssl_conf }}
+  ssl.conf: |
+    {{- . | nindent 4 }}
+  {{- end }}
+
+  {{- with .Values.web.custom.defaults._system_config_js }}
+  system-config.js: |
+    {{- . | nindent 4 }}
+  {{- end }}
+{{- end }}

@@ -1,0 +1,254 @@
+{{- if .Values.coturn.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "jitsi-meet.coturn.fullname" . }}
+  labels:
+    {{- include "jitsi-meet.coturn.labels" . | nindent 4 }}
+    {{- with .Values.coturn.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- if or
+         .Values.coturn.turns.enabled
+         .Values.coturn.annotations
+  }}
+  annotations:
+    {{- if .Values.coturn.turns.enabled }}
+    {{-   $tlsSecret := .Values.coturn.turns.certificate.existingSecretName }}
+    {{-   if .Values.coturn.turns.certificate.create }}
+    {{-     $tlsSecret = printf "%s-tls" (include "jitsi-meet.coturn.fullname" .) }}
+    {{-   end }}
+    secret.reloader.stakater.com/reload: {{ $tlsSecret }}
+    {{- end }}
+    {{- with .Values.coturn.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.coturn.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "jitsi-meet.coturn.selectorLabels" . | nindent 6 }}
+  {{- with .Values.coturn.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "jitsi-meet.coturn.selectorLabels" . | nindent 8 }}
+        {{- with (mergeOverwrite (dict) .Values.global.podLabels .Values.coturn.podLabels) }}
+        {{- toYaml . | nindent 8  }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/coturn/configmap.yaml") . | sha256sum | quote }}
+        checksum/config-acme-proxy: {{ include (print $.Template.BasePath "/coturn/configmap-acme-proxy.yaml") . | sha256sum | quote }}
+        checksum/config-configs: {{ include (print $.Template.BasePath "/coturn/configmap-configs.yaml") . | sha256sum | quote }}
+        checksum/config-extrafiles: {{ include (print $.Template.BasePath "/coturn/configmap-extrafiles.yaml") . | sha256sum | quote }}
+        checksum/secret: {{ include (print $.Template.BasePath "/coturn/secret.yaml") . | sha256sum | quote }}
+        {{- with (mergeOverwrite (dict) .Values.global.podAnnotations .Values.coturn.podAnnotations) }}
+        {{- toYaml . | nindent 8  }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.coturn.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "jitsi-meet.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.coturn.automountServiceAccountToken }}
+      securityContext:
+        {{- toYaml .Values.coturn.podSecurityContext | nindent 8 }}
+      volumes:
+        - name: config-dir
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: {{ include "jitsi-meet.coturn.fullname" . }}-configs
+        {{- if .Values.coturn.turns.enabled }}
+        - name: tls
+          secret:
+            {{- if .Values.coturn.turns.certificate.create }}
+            secretName: {{ include "jitsi-meet.coturn.fullname" . }}-tls
+            {{-   if .Values.coturn.turns.certificate.acmeProxy.enabled }}
+            optional: true
+            {{-   end }}
+            {{- else }}
+            secretName: {{ required "coturn.turns.certificate.existingSecretName is required when coturn.turns.certificate.create is false" .Values.coturn.turns.certificate.existingSecretName }}
+            {{- end }}
+        {{- end }}
+        {{- if and
+               .Values.coturn.turns.enabled
+               .Values.coturn.turns.certificate.acmeProxy.enabled
+        }}
+        - name: acme-proxy-config
+          configMap:
+            name: {{ include "jitsi-meet.coturn.fullname" . }}-acme-proxy
+        - name: acme-proxy-run
+          emptyDir:
+            sizeLimit: 8Mi
+        - name: acme-proxy-cache
+          emptyDir:
+            sizeLimit: 16Mi
+        {{- end }}
+        {{- if .Values.coturn.extraFiles }}
+        - name: extra-files
+          configMap:
+            name: {{ include "jitsi-meet.coturn.fullname" . }}-extrafiles
+            items:
+              {{- range $i, $f := .Values.coturn.extraFiles }}
+              - key: extrafile-{{ $i }}
+                path: extrafile-{{ $i }}
+                {{- with $f.mode }}
+                mode: {{ . }}
+                {{- end }}
+              {{- end }}
+        {{- end }}
+        {{- with .Values.coturn.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      initContainers:
+        {{- if and
+               .Values.coturn.turns.enabled
+               .Values.coturn.turns.certificate.acmeProxy.enabled
+        }}
+        - name: acme-proxy
+          image: "{{ .Values.coturn.initContainers.acmeProxy.image }}"
+          imagePullPolicy: {{ pluck "pullPolicy" .Values.coturn.initContainers.acmeProxy .Values.image | first }}
+          resources:
+            {{- toYaml .Values.coturn.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.coturn.initContainers.acmeProxy.securityContext | nindent 12 }}
+          restartPolicy: Always
+          volumeMounts:
+            - name: acme-proxy-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true
+            # nginx writes its pid and temporary files
+            - name: acme-proxy-run
+              mountPath: /var/run
+            - name: acme-proxy-cache
+              mountPath: /var/cache/nginx
+        {{- end }}
+        - name: init-coturn
+          image: "{{ .Values.coturn.initContainers.busybox.image }}"
+          imagePullPolicy: {{ pluck "pullPolicy" .Values.coturn.initContainers.busybox .Values.image | first }}
+          resources:
+            {{- toYaml .Values.coturn.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.coturn.initContainers.busybox.securityContext | nindent 12  }}
+          command:
+            - sh
+            - -c
+            - |
+              cp /turnserver.conf /config-dir/ && \
+              echo >>/config-dir/turnserver.conf && \
+              echo "static-auth-secret=$TURN_CREDENTIALS" >>/config-dir/turnserver.conf
+          envFrom:
+            - secretRef:
+                name: {{ include "jitsi-meet.coturn.secretName" . }}
+          volumeMounts:
+            - name: config-dir
+              mountPath: /config-dir
+            - name: config
+              mountPath: /turnserver.conf
+              subPath: turnserver.conf
+            {{- if .Values.coturn.turns.enabled }}
+            - name: tls
+              mountPath: /etc/coturn/tls
+              readOnly: true
+            {{- end }}
+        {{- with .Values.coturn.extraInitContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.coturn.image.repository }}:{{ .Values.coturn.image.tag }}"
+          imagePullPolicy: {{ pluck "pullPolicy" .Values.coturn.image .Values.image | first }}
+          {{- if .Values.coturn.turns.enabled }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Waiting for TLS certificate..."
+              while [ ! -f /tls/tls.crt ] || [ ! -f /tls/tls.key ]; do
+                sleep 5
+              done
+              echo "TLS certificate found, starting coturn"
+              exec turnserver -c /etc/coturn/turnserver.conf
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.coturn.securityContext | nindent 12 }}
+          envFrom:
+            - secretRef:
+                name: {{ include "jitsi-meet.coturn.secretName" . }}
+            - configMapRef:
+                name: {{ include "jitsi-meet.common" . }}
+            - configMapRef:
+                name: {{ include "jitsi-meet.coturn.fullname" . }}
+            {{- range .Values.coturn.extraEnvFrom }}
+            - {{  tpl (toYaml .) $ | indent 14 | trim }}
+            {{- end }}
+            {{- if .Values.global.releaseSecretsOverride.enabled }}
+            {{-   range .Values.global.releaseSecretsOverride.extraEnvFrom }}
+            - {{    tpl (toYaml .) $ | indent 14 | trim }}
+            {{-   end }}
+            {{- end }}
+          ports:
+            - name: tcp-turn
+              containerPort: 3478
+              protocol: TCP
+            - name: udp-turn
+              containerPort: 3478
+              protocol: UDP
+            {{- if .Values.coturn.metrics.enabled }}
+            - name: tcp-metrics
+              containerPort: 9641
+              protocol: TCP
+            {{- end }}
+          {{- with .Values.coturn.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.coturn.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.coturn.resources | nindent 12 }}
+          volumeMounts:
+            - name: config-dir
+              mountPath: /etc/coturn
+              readOnly: true
+            {{- if .Values.coturn.turns.enabled }}
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            {{- end }}
+            {{- range $i, $f := .Values.coturn.extraFiles }}
+            - name: extra-files
+              mountPath: {{ $f.path }}
+              subPath: extrafile-{{ $i }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.coturn.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+
+      {{- with .Values.coturn.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.coturn.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.coturn.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

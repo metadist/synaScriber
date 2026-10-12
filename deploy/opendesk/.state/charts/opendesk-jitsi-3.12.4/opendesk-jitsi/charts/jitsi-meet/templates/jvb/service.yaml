@@ -1,0 +1,63 @@
+{{- if and
+       .Values.jvb.service.enabled
+       (not .Values.jvb.useHostPort)
+       (not .Values.jvb.useHostNetwork)
+}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "jitsi-meet.jvb.fullname" . }}
+  labels:
+    {{- include "jitsi-meet.jvb.labels" . | nindent 4 }}
+  {{- with .Values.jvb.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.jvb.service.type }}
+  {{- with .Values.jvb.service.loadBalancerClass }}
+  loadBalancerClass: {{ . }}
+  {{- end }}
+  {{- with .Values.jvb.service.loadBalancerIP }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  {{- with .Values.jvb.service.ipFamilyPolicy }}
+  ipFamilyPolicy: {{ . }}
+  {{- end }}
+  ports:
+    {{- $basePort := .Values.jvb.UDPPort | default 10000 }}
+    {{- $rangeSize := .Values.jvb.portRangeSize | default 1 }}
+    # Each JVB listens on its own port, so the Service maps one port per bridge.
+    # The targetPort is referenced by name: a named port resolves per pod, which
+    # keeps every Service port bound to exactly one JVB instance.
+    {{- range $i := until (int $rangeSize) }}
+    - name: rtp-udp-{{ $i }}
+      protocol: UDP
+      port: {{ add $basePort $i }}
+      targetPort: rtp-udp-{{ $i }}
+      {{- if and
+             $.Values.jvb.nodePort
+             (or
+                (eq $.Values.jvb.service.type "NodePort")
+                (eq $.Values.jvb.service.type "LoadBalancer")
+             )
+      }}
+      nodePort: {{ add $.Values.jvb.nodePort $i }}
+      {{- end }}
+    {{- end }}
+    {{- with .Values.jvb.service.extraPorts }}
+    {{ toYaml . | indent 4 | trim }}
+    {{- end }}
+  {{- with .Values.jvb.service.externalIPs }}
+  externalIPs:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- if or
+         (eq .Values.jvb.service.type "NodePort")
+         (eq .Values.jvb.service.type "LoadBalancer")
+  }}
+  externalTrafficPolicy: {{ .Values.jvb.service.externalTrafficPolicy }}
+  {{- end }}
+  selector:
+    {{- include "jitsi-meet.jvb.selectorLabels" . | nindent 4 }}
+{{- end }}

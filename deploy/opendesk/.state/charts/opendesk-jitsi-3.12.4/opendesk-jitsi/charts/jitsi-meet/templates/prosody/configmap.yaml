@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "jitsi-meet.prosody.fullname" . }}
+  labels:
+    {{- include "jitsi-meet.prosody.labels" . | nindent 4 }}
+data:
+  {{- if or
+         .Values.transcriber.enabled
+         .Values.opusTranscriberProxy.enabled
+  }}
+  ENABLE_TRANSCRIPTIONS: "true"
+  {{- end }}
+
+  {{- range $key, $value := .Values.prosody.extraEnvs }}
+  {{-   if not (kindIs "invalid" $value) }}
+  {{      $key }}: {{ tpl (toString $value) $ | quote }}
+  {{-   end }}
+  {{- end }}

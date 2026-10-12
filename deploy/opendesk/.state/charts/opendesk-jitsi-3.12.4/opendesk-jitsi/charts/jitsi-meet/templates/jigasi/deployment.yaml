@@ -1,0 +1,206 @@
+{{- if and
+       .Values.jigasi.enabled
+       (not .Values.jigasi.useExternalJigasi)
+}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "jitsi-meet.jigasi.fullname" . }}
+  labels:
+    {{- include "jitsi-meet.jigasi.labels" . | nindent 4 }}
+    {{- with .Values.jigasi.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.jigasi.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "jitsi-meet.jigasi.selectorLabels" . | nindent 6 }}
+  {{- with .Values.jigasi.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "jitsi-meet.jigasi.selectorLabels" . | nindent 8 }}
+        {{- with (mergeOverwrite (dict) .Values.global.podLabels .Values.jigasi.podLabels) }}
+        {{- toYaml . | nindent 8  }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/jigasi/configmap.yaml") . | sha256sum | quote }}
+        checksum/config-defaults: {{ include (print $.Template.BasePath "/jigasi/configmap-defaults.yaml") . | sha256sum | quote }}
+        checksum/config-extrafiles: {{ include (print $.Template.BasePath "/jigasi/configmap-extrafiles.yaml") . | sha256sum | quote }}
+        checksum/config-scripts: {{ include (print $.Template.BasePath "/jigasi/configmap-scripts.yaml") . | sha256sum | quote }}
+        checksum/secret: {{ include (print $.Template.BasePath "/jigasi/secret.yaml") . | sha256sum | quote }}
+        {{- with (mergeOverwrite (dict) .Values.global.podAnnotations .Values.jigasi.podAnnotations) }}
+        {{- toYaml . | nindent 8  }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.jigasi.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "jitsi-meet.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.jigasi.automountServiceAccountToken }}
+      securityContext:
+        {{- toYaml .Values.jigasi.podSecurityContext | nindent 8 }}
+      volumes:
+        - name: run
+          emptyDir:
+            sizeLimit: 32Mi
+        - name: tmp
+          emptyDir:
+            # Larger than the 16Mi most components use, from what Jigasi needs
+            # on real deployments.
+            sizeLimit: 128Mi
+        - name: custom-scripts
+          configMap:
+            defaultMode: 0755
+            name: {{ include "jitsi-meet.jigasi.fullname" . }}-scripts
+        - name: custom-defaults
+          configMap:
+            name: {{ include "jitsi-meet.jigasi.fullname" . }}-defaults
+        {{- if .Values.jigasi.extraFiles }}
+        - name: extra-files
+          configMap:
+            name: {{ include "jitsi-meet.jigasi.fullname" . }}-extrafiles
+            items:
+              {{- range $i, $f := .Values.jigasi.extraFiles }}
+              - key: extrafile-{{ $i }}
+                path: extrafile-{{ $i }}
+                {{- with $f.mode }}
+                mode: {{ . }}
+                {{- end }}
+              {{- end }}
+        {{- end }}
+        {{- with .Values.jigasi.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      initContainers:
+        - name: wait-for-prosody
+          image: "{{ .Values.jigasi.initContainers.busybox.image }}"
+          imagePullPolicy: {{ pluck "pullPolicy" .Values.jigasi.initContainers.busybox .Values.image | first }}
+          resources:
+            {{- toYaml .Values.jigasi.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.jigasi.initContainers.busybox.securityContext | nindent 12  }}
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for Prosody on port 5280";
+              while ! nc -z -w 1 {{ include "jitsi-meet.xmpp.server" . }} 5280; do
+                sleep 1;
+              done;
+              echo ">> Prosody is available"
+        {{- with .Values.jigasi.extraInitContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.jigasi.image.repository }}:{{ .Values.jigasi.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ pluck "pullPolicy" .Values.jigasi.image .Values.image | first }}
+          securityContext:
+            {{- toYaml .Values.jigasi.securityContext | nindent 12 }}
+          envFrom:
+            - secretRef:
+                name: {{ include "jitsi-meet.jigasi.secretName" . }}
+            - configMapRef:
+                name: {{ include "jitsi-meet.common" . }}
+            - configMapRef:
+                name: {{ include "jitsi-meet.jigasi.fullname" . }}
+            {{- range .Values.jigasi.extraEnvFrom }}
+            - {{  tpl (toYaml .) $ | indent 14 | trim }}
+            {{- end }}
+            {{- if .Values.global.releaseSecretsOverride.enabled }}
+            {{-   range .Values.global.releaseSecretsOverride.extraEnvFrom }}
+            - {{    tpl (toYaml .) $ | indent 14 | trim }}
+            {{-   end }}
+            {{- end }}
+          ports:
+            # The health port the probes target.
+            - name: http
+              containerPort: 8788
+              protocol: TCP
+          {{- with .Values.jigasi.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.jigasi.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.jigasi.resources | nindent 12 }}
+          volumeMounts:
+            - name: run
+              mountPath: /run
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.jigasi.custom.scripts._config }}
+            - name: custom-scripts
+              mountPath: /etc/s6-overlay/scripts/config
+              subPath: config
+            {{- end }}
+            {{- if .Values.jigasi.custom.defaults._autoscaler_sidecar_config }}
+            - name: custom-defaults
+              mountPath: /defaults/autoscaler-sidecar.config
+              subPath: autoscaler-sidecar.config
+            {{- end }}
+            {{- if .Values.jigasi.custom.defaults._logging_properties }}
+            - name: custom-defaults
+              mountPath: /defaults/logging.properties
+              subPath: logging.properties
+            {{- end }}
+            {{- if .Values.jigasi.custom.defaults._sip_communicator_properties }}
+            - name: custom-defaults
+              mountPath: /defaults/sip-communicator.properties
+              subPath: sip-communicator.properties
+            {{- end }}
+            {{- if .Values.jigasi.custom.defaults._sipserver_sip_communicator_properties }}
+            - name: custom-defaults
+              mountPath: /defaults/sipserver-sip-communicator.properties
+              subPath: sipserver-sip-communicator.properties
+            {{- end }}
+            {{- if .Values.jigasi.custom.defaults._transcriber_sip_communicator_properties }}
+            - name: custom-defaults
+              mountPath: /defaults/transcriber-sip-communicator.properties
+              subPath: transcriber-sip-communicator.properties
+            {{- end }}
+            {{- if .Values.jigasi.custom.defaults._xmpp_sip_communicator_properties }}
+            - name: custom-defaults
+              mountPath: /defaults/xmpp-sip-communicator.properties
+              subPath: xmpp-sip-communicator.properties
+            {{- end }}
+            {{- range $i, $f := .Values.jigasi.extraFiles }}
+            - name: extra-files
+              mountPath: {{ $f.path }}
+              subPath: extrafile-{{ $i }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.jigasi.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+
+      {{- with .Values.jigasi.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.jigasi.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.jigasi.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -1,0 +1,313 @@
+{{/*
+More than one JVB is only reachable with hostPort or hostNetwork, where each
+pod has its own node IP. Otherwise all pods of a Deployment answer on the same
+Service port and would receive each other's traffic.
+*/}}
+{{- if and
+       (not .Values.jvb.useHostPort)
+       (not .Values.jvb.useHostNetwork)
+       (gt (int .Values.jvb.replicaCount) 1)
+}}
+{{-   fail "jvb.replicaCount above 1 requires jvb.useHostPort or jvb.useHostNetwork. Use jvb.portRangeSize to run multiple JVBs." }}
+{{- end }}
+
+{{- $basePort := .Values.jvb.UDPPort }}
+{{- $rangeSize := .Values.jvb.portRangeSize | default 1 }}
+
+{{- range $i := until (int $rangeSize) }}
+{{- $udpPort := add $basePort $i }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "jitsi-meet.jvb.fullname" $ }}-{{ $i }}
+  labels:
+    {{- include "jitsi-meet.jvb.labels" $ | nindent 4 }}
+    instance: {{ $i | quote }}
+    {{- with $.Values.jvb.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with $.Values.jvb.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if not $.Values.jvb.autoscaling.enabled }}
+  replicas: {{ $.Values.jvb.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "jitsi-meet.jvb.selectorLabels" $ | nindent 6 }}
+      instance: {{ $i | quote }}
+  {{- if $.Values.jvb.useHostPort }}
+  {{- /*
+       Forced, not configurable: a rolling update cannot start the new pod
+       while the old one still holds the hostPort, so the old one has to go
+       first. jvb.strategy applies only without hostPort.
+  */}}
+  strategy:
+    type: Recreate
+  {{- else }}
+  {{-   with $.Values.jvb.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{-   end }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "jitsi-meet.jvb.selectorLabels" $ | nindent 8 }}
+        instance: {{ $i | quote }}
+        {{- with (mergeOverwrite (dict) $.Values.global.podLabels $.Values.jvb.podLabels) }}
+        {{- toYaml . | nindent 8  }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/jvb/configmap.yaml") $ | sha256sum | quote }}
+        checksum/config-configs: {{ include (print $.Template.BasePath "/jvb/configmap-configs.yaml") $ | sha256sum | quote }}
+        checksum/config-defaults: {{ include (print $.Template.BasePath "/jvb/configmap-defaults.yaml") $ | sha256sum | quote }}
+        checksum/config-extrafiles: {{ include (print $.Template.BasePath "/jvb/configmap-extrafiles.yaml") $ | sha256sum | quote }}
+        checksum/config-scripts: {{ include (print $.Template.BasePath "/jvb/configmap-scripts.yaml") $ | sha256sum | quote }}
+        checksum/secret: {{ include (print $.Template.BasePath "/jvb/secret.yaml") $ | sha256sum | quote }}
+        {{- if and
+               $.Values.jvb.metrics.enabled
+               $.Values.jvb.metrics.prometheusAnnotations
+        }}
+        prometheus.io/port: "9888"
+        prometheus.io/scrape: "true"
+        {{- end }}
+        {{- with (mergeOverwrite (dict) $.Values.global.podAnnotations $.Values.jvb.podAnnotations) }}
+        {{- toYaml . | nindent 8  }}
+        {{- end }}
+    spec:
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.jvb.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "jitsi-meet.serviceAccountName" $ }}
+      automountServiceAccountToken: {{ $.Values.jvb.automountServiceAccountToken }}
+      {{- if or
+             (not $.Values.jvb.service.enabled)
+             $.Values.jvb.useHostPort
+             $.Values.jvb.useHostNetwork
+      }}
+      terminationGracePeriodSeconds: {{ $.Values.jvb.terminationGracePeriodSeconds }}
+      {{- end }}
+      securityContext:
+        {{- toYaml $.Values.jvb.podSecurityContext | nindent 8 }}
+      {{- if $.Values.jvb.useHostNetwork }}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
+      volumes:
+        - name: run
+          emptyDir:
+            sizeLimit: 32Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+        - name: custom-scripts
+          configMap:
+            defaultMode: 0755
+            name: {{ include "jitsi-meet.jvb.fullname" $ }}-scripts
+        - name: custom-configs
+          configMap:
+            name: {{ include "jitsi-meet.jvb.fullname" $ }}-configs
+        - name: custom-defaults
+          configMap:
+            name: {{ include "jitsi-meet.jvb.fullname" $ }}-defaults
+        {{- if $.Values.jvb.extraFiles }}
+        - name: extra-files
+          configMap:
+            name: {{ include "jitsi-meet.jvb.fullname" $ }}-extrafiles
+            items:
+              {{- range $i, $f := $.Values.jvb.extraFiles }}
+              - key: extrafile-{{ $i }}
+                path: extrafile-{{ $i }}
+                {{- with $f.mode }}
+                mode: {{ . }}
+                {{- end }}
+              {{- end }}
+        {{- end }}
+        {{- with $.Values.jvb.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with $.Values.jvb.extraInitContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ $.Chart.Name }}
+          image: "{{ $.Values.jvb.image.repository }}:{{ $.Values.jvb.image.tag | default $.Chart.AppVersion }}"
+          imagePullPolicy: {{ pluck "pullPolicy" $.Values.jvb.image $.Values.image | first }}
+          securityContext:
+            {{- toYaml $.Values.jvb.securityContext | nindent 12 }}
+          envFrom:
+            - secretRef:
+                name: {{ include "jitsi-meet.jvb.secretName" $ }}
+            - configMapRef:
+                name: {{ include "jitsi-meet.common" $ }}
+            - configMapRef:
+                name: {{ include "jitsi-meet.jvb.fullname" $ }}
+            {{- range $.Values.jvb.extraEnvFrom }}
+            - {{  tpl (toYaml .) $ | indent 14 | trim }}
+            {{- end }}
+            {{- if $.Values.global.releaseSecretsOverride.enabled }}
+            {{-   range $.Values.global.releaseSecretsOverride.extraEnvFrom }}
+            - {{    tpl (toYaml .) $ | indent 14 | trim }}
+            {{-   end }}
+            {{- end }}
+          env:
+            - name: JVB_PORT
+              value: {{ $udpPort | quote }}
+            {{- if $.Values.jvb.publicIPs }}
+            - name: JVB_ADVERTISE_IPS
+              value: {{ $.Values.jvb.publicIPs | join "," | quote }}
+            {{- else if $.Values.jvb.useNodeIP }}
+            - name: JVB_ADVERTISE_IPS
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            {{- end }}
+            {{- if  $.Values.octo.enabled }}
+            - name: JVB_OCTO_BIND_ADDRESS
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: JVB_OCTO_RELAY_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            {{- end }}
+          ports:
+            - name: rtp-udp-{{ $i }}
+              containerPort: {{ $udpPort }}
+              {{- if $.Values.jvb.useHostPort }}
+              hostPort: {{ $udpPort }}
+              {{- end }}
+              protocol: UDP
+            # The health port the probes target.
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          {{- with $.Values.jvb.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $.Values.jvb.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if or
+                 (not $.Values.jvb.service.enabled)
+                 $.Values.jvb.useHostPort
+                 $.Values.jvb.useHostNetwork
+          }}
+          {{- /*
+               Drain the bridge before it goes away: jicofo stops selecting it
+               for new conferences while the running ones finish. Not rendered
+               behind the service, where the draining pod and its replacement
+               share a port and UDP would be split between two bridges. Wider
+               than the guards above on purpose: draining needs no service in
+               front, not a per-pod address. A bridge that has dropped out of
+               the brewery is orphaned, so it gives up instead of draining.
+          */}}
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    curl -sf -m 5 -XPOST http://localhost:8080/colibri/drain/enable || exit 0
+                    while :; do
+                      m=$(curl -sf -m 5 http://localhost:8080/colibri/stats | jq -r '.mucs_joined' 2>/dev/null)
+                      case "$m" in 0) exit 0 ;; esac
+                      n=$(curl -sf -m 5 http://localhost:8080/colibri/stats | jq -r '.conferences' 2>/dev/null)
+                      case "$n" in [1-9]*) ;; *) exit 0 ;; esac
+                      sleep 10
+                    done
+          {{- end }}
+          resources:
+            {{- toYaml $.Values.jvb.resources | nindent 12 }}
+          volumeMounts:
+            - name: run
+              mountPath: /run
+            - name: tmp
+              mountPath: /tmp
+            {{- if $.Values.jvb.custom.scripts._config }}
+            - name: custom-scripts
+              mountPath: /etc/s6-overlay/scripts/config
+              subPath: config
+            {{- end }}
+            {{- if $.Values.jvb.custom.configs._custom_jvb_conf }}
+            - name: custom-configs
+              mountPath: /config/custom-jvb.conf
+              subPath: custom-jvb.conf
+              readOnly: true
+            {{- end }}
+            {{- if $.Values.jvb.custom.defaults._autoscaler_sidecar_config }}
+            - name: custom-defaults
+              mountPath: /defaults/autoscaler-sidecar.config
+              subPath: autoscaler-sidecar.config
+            {{- end }}
+            {{- if $.Values.jvb.custom.defaults._jvb_conf }}
+            - name: custom-defaults
+              mountPath: /defaults/jvb.conf
+              subPath: jvb.conf
+            {{- end }}
+            {{- if $.Values.jvb.custom.defaults._logging_properties }}
+            - name: custom-defaults
+              mountPath: /defaults/logging.properties
+              subPath: logging.properties
+            {{- end }}
+            {{- range $i, $f := $.Values.jvb.extraFiles }}
+            - name: extra-files
+              mountPath: {{ $f.path }}
+              subPath: extrafile-{{ $i }}
+              readOnly: true
+            {{- end }}
+            {{- with $.Values.jvb.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+
+        {{- if $.Values.jvb.metrics.enabled }}
+        - name: metrics
+          image: {{ $.Values.jvb.metrics.image.repository }}:{{ $.Values.jvb.metrics.image.tag }}
+          imagePullPolicy: {{ $.Values.jvb.metrics.image.pullPolicy }}
+          securityContext:
+            {{- toYaml $.Values.jvb.metrics.securityContext | nindent 12 }}
+          command:
+            - /prometheus-jitsi-meet-exporter
+            - -videobridge-url
+            - http://localhost:8080/colibri/stats
+          ports:
+            - containerPort: 9888
+              name: tcp-metrics
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9888
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            {{- toYaml $.Values.jvb.metrics.resources | nindent 12 }}
+            {{- end }}
+
+      {{- with $.Values.jvb.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.jvb.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.jvb.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

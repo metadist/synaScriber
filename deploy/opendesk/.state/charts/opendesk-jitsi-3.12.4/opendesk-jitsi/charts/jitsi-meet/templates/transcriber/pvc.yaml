@@ -1,0 +1,23 @@
+{{- if and
+       .Values.transcriber.enabled
+       (not .Values.transcriber.useExternalTranscriber)
+       .Values.transcriber.persistence.enabled
+       (not .Values.transcriber.persistence.existingClaim)
+}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "jitsi-meet.transcriber.fullname" . }}
+  labels:
+    {{- include "jitsi-meet.transcriber.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: {{ .Values.transcriber.persistence.size | quote }}
+  {{- with .Values.transcriber.persistence.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}
+

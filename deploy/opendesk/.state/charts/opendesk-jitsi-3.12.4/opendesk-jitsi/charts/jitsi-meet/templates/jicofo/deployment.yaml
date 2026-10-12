@@ -1,0 +1,201 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "jitsi-meet.jicofo.fullname" . }}
+  labels:
+    {{- include "jitsi-meet.jicofo.labels" . | nindent 4 }}
+    {{- with .Values.jicofo.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.jicofo.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "jitsi-meet.jicofo.selectorLabels" . | nindent 6 }}
+  {{- with .Values.jicofo.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "jitsi-meet.jicofo.selectorLabels" . | nindent 8 }}
+        {{- with (mergeOverwrite (dict) .Values.global.podLabels .Values.jicofo.podLabels) }}
+        {{- toYaml . | nindent 8  }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/jicofo/configmap.yaml") . | sha256sum | quote }}
+        checksum/config-configs: {{ include (print $.Template.BasePath "/jicofo/configmap-configs.yaml") . | sha256sum | quote }}
+        checksum/config-defaults: {{ include (print $.Template.BasePath "/jicofo/configmap-defaults.yaml") . | sha256sum | quote }}
+        checksum/config-extrafiles: {{ include (print $.Template.BasePath "/jicofo/configmap-extrafiles.yaml") . | sha256sum | quote }}
+        checksum/config-scripts: {{ include (print $.Template.BasePath "/jicofo/configmap-scripts.yaml") . | sha256sum | quote }}
+        checksum/secret: {{ include (print $.Template.BasePath "/jicofo/secret.yaml") . | sha256sum | quote }}
+        {{- with (mergeOverwrite (dict) .Values.global.podAnnotations .Values.jicofo.podAnnotations) }}
+        {{- toYaml . | nindent 8  }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.jicofo.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "jitsi-meet.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.jicofo.automountServiceAccountToken }}
+      securityContext:
+        {{- toYaml .Values.jicofo.podSecurityContext | nindent 8 }}
+      volumes:
+        - name: run
+          emptyDir:
+            sizeLimit: 32Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+        - name: custom-scripts
+          configMap:
+            defaultMode: 0755
+            name: {{ include "jitsi-meet.jicofo.fullname" . }}-scripts
+        - name: custom-defaults
+          configMap:
+            name: {{ include "jitsi-meet.jicofo.fullname" . }}-defaults
+        {{- if or
+               .Values.jicofo.custom.configs._custom_jicofo_conf
+               .Values.opusTranscriberProxy.enabled
+        }}
+        - name: custom-configs
+          configMap:
+            name: {{ include "jitsi-meet.jicofo.fullname" . }}-configs
+        {{- end }}
+        {{- if .Values.jicofo.extraFiles }}
+        - name: extra-files
+          configMap:
+            name: {{ include "jitsi-meet.jicofo.fullname" . }}-extrafiles
+            items:
+              {{- range $i, $f := .Values.jicofo.extraFiles }}
+              - key: extrafile-{{ $i }}
+                path: extrafile-{{ $i }}
+                {{- with $f.mode }}
+                mode: {{ . }}
+                {{- end }}
+              {{- end }}
+        {{- end }}
+        {{- with .Values.jicofo.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.jicofo.extraInitContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.jicofo.image.repository }}:{{ .Values.jicofo.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ pluck "pullPolicy" .Values.jicofo.image .Values.image | first }}
+          securityContext:
+            {{- toYaml .Values.jicofo.securityContext | nindent 12 }}
+          envFrom:
+            - secretRef:
+                name: {{ include "jitsi-meet.jicofo.secretName" . }}
+            - configMapRef:
+                name: {{ include "jitsi-meet.common" . }}
+            - configMapRef:
+                name: {{ include "jitsi-meet.jicofo.fullname" . }}
+            {{- range .Values.jicofo.extraEnvFrom }}
+            - {{  tpl (toYaml .) $ | indent 14 | trim }}
+            {{- end }}
+            {{- if .Values.global.releaseSecretsOverride.enabled }}
+            {{-   range .Values.global.releaseSecretsOverride.extraEnvFrom }}
+            - {{    tpl (toYaml .) $ | indent 14 | trim }}
+            {{-   end }}
+            {{- end }}
+          ports:
+            # The health port the probes target.
+            - name: http
+              containerPort: 8888
+              protocol: TCP
+          {{- with .Values.jicofo.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.jicofo.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.jicofo.resources | nindent 12 }}
+          volumeMounts:
+            - name: run
+              mountPath: /run
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.jicofo.custom.scripts._config }}
+            - name: custom-scripts
+              mountPath: /etc/s6-overlay/scripts/config
+              subPath: config
+            {{- end }}
+            {{- if .Values.jicofo.custom.defaults._jicofo_conf }}
+            - name: custom-defaults
+              mountPath: /defaults/jicofo.conf
+              subPath: jicofo.conf
+            {{- end }}
+            {{- if .Values.jicofo.custom.defaults._logging_properties }}
+            - name: custom-defaults
+              mountPath: /defaults/logging.properties
+              subPath: logging.properties
+            {{- end }}
+            {{- if or
+                   .Values.jicofo.custom.configs._custom_jicofo_conf
+                   .Values.opusTranscriberProxy.enabled
+            }}
+            - name: custom-configs
+              mountPath: /config/custom-jicofo.conf
+              subPath: custom-jicofo.conf
+              readOnly: true
+            {{- end }}
+            {{- range $i, $f := .Values.jicofo.extraFiles }}
+            - name: extra-files
+              mountPath: {{ $f.path }}
+              subPath: extrafile-{{ $i }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.jicofo.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+
+        {{- if .Values.jicofo.metrics.enabled }}
+        - name: metrics
+          image: "{{ .Values.jicofo.metrics.image.repository }}:{{ .Values.jicofo.metrics.image.tag }}"
+          imagePullPolicy: {{ pluck "pullPolicy" .Values.jicofo.metrics.image .Values.image | first }}
+          securityContext:
+            {{- toYaml .Values.jicofo.metrics.securityContext | nindent 12 }}
+          ports:
+            - name: metrics
+              containerPort: 9996
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 9996
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.jicofo.metrics.resources | nindent 12 }}
+        {{- end }}
+
+      {{- with .Values.jicofo.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.jicofo.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.jicofo.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

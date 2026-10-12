@@ -1,0 +1,36 @@
+{{/*
+SPDX-FileCopyrightText: 2023 Bundesministerium des Innern und für Heimat, PG ZenDiS "Projektgruppe für Aufbau ZenDiS"
+SPDX-License-Identifier: Apache-2.0
+*/}}
+{{- if .Values.rbac.create -}}
+---
+apiVersion: "rbac.authorization.k8s.io/v1"
+kind: "Role"
+metadata:
+  name: {{ include "common.names.fullname" . }}
+  labels:
+    {{- include "common.labels.standard" . | nindent 4 }}
+{{- $jvb := include "opendesk-jitsi.jvb.fullname" . }}
+rules:
+  # Read the address and the node ports and repoint the service ports.
+  - apiGroups: [""]
+    resources:
+      - "services"
+    resourceNames:
+      - {{ $jvb | quote }}
+    verbs:
+      - "get"
+      - "patch"
+  # Set the port every JVB listens on and the address it advertises.
+  - apiGroups: ["apps"]
+    resources:
+      - "deployments"
+    resourceNames:
+      {{- range $i := until (int (.Values.jitsi.jvb.portRangeSize | default 1)) }}
+      - {{ printf "%s-%d" $jvb $i | quote }}
+      {{- end }}
+    verbs:
+      - "get"
+      - "patch"
+...
+{{- end }}

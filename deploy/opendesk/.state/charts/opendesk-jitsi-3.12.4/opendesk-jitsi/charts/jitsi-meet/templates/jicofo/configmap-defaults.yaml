@@ -1,0 +1,21 @@
+{{- if or
+       .Values.jicofo.custom.defaults._jicofo_conf
+       .Values.jicofo.custom.defaults._logging_properties
+}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "jitsi-meet.jicofo.fullname" . }}-defaults
+  labels:
+    {{- include "jitsi-meet.jicofo.labels" . | nindent 4 }}
+data:
+  {{- with .Values.jicofo.custom.defaults._jicofo_conf }}
+  jicofo.conf: |
+    {{- . | nindent 4 }}
+  {{- end }}
+
+  {{- with .Values.jicofo.custom.defaults._logging_properties }}
+  logging.properties: |
+    {{- . | nindent 4 }}
+  {{- end }}
+{{- end }}

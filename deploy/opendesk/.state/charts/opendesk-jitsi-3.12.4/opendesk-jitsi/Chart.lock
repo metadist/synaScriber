@@ -1,0 +1,9 @@
+dependencies:
+- name: common
+  repository: oci://registry.opencode.de/bmi/opendesk/components/external/charts/bitnami-charts
+  version: 2.31.7
+- name: jitsi-meet
+  repository: https://jitsi-contrib.github.io/jitsi-helm/
+  version: 3.8.0
+digest: sha256:da3af5d52c4f57a93565f7f73421e559a387f997a1e3867fa9c400e7ec0de5e9
+generated: "2026-09-23T16:37:30.177501412Z"

@@ -1,0 +1,17 @@
+{{- if and
+       .Values.transcriber.enabled
+       (not .Values.transcriber.useExternalTranscriber)
+       .Values.transcriber.extraFiles
+}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "jitsi-meet.transcriber.fullname" . }}-extrafiles
+  labels:
+    {{- include "jitsi-meet.transcriber.labels" . | nindent 4 }}
+data:
+  {{- range $i, $f := .Values.transcriber.extraFiles }}
+  extrafile-{{ $i }}: |
+    {{- $f.content | nindent 4 }}
+  {{- end }}
+{{- end }}

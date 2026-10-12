@@ -1,0 +1,16 @@
+{{- if and
+       .Values.excalidraw.enabled
+       .Values.excalidraw.extraFiles
+}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "jitsi-meet.excalidraw.fullname" . }}-extrafiles
+  labels:
+    {{- include "jitsi-meet.excalidraw.labels" . | nindent 4 }}
+data:
+  {{- range $i, $f := .Values.excalidraw.extraFiles }}
+  extrafile-{{ $i }}: |
+    {{- $f.content | nindent 4 }}
+  {{- end }}
+{{- end }}

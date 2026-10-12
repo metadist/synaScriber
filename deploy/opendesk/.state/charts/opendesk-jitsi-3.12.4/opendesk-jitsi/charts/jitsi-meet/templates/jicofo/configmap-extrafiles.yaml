@@ -1,0 +1,13 @@
+{{- if .Values.jicofo.extraFiles }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "jitsi-meet.jicofo.fullname" . }}-extrafiles
+  labels:
+    {{- include "jitsi-meet.jicofo.labels" . | nindent 4 }}
+data:
+  {{- range $i, $f := .Values.jicofo.extraFiles }}
+  extrafile-{{ $i }}: |
+    {{- $f.content | nindent 4 }}
+  {{- end }}
+{{- end }}

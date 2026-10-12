@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "jitsi-meet.jvb.fullname" . }}
+  labels:
+    {{- include "jitsi-meet.jvb.labels" . | nindent 4 }}
+data:
+  COLIBRI_REST_ENABLED: "true"
+  JVB_BREWERY_MUC: {{ .Values.jvb.breweryMuc | quote }}
+  {{- if .Values.jvb.disableStun }}
+  JVB_DISABLE_STUN: "true"
+  {{- else if and
+         .Values.turnHost
+         .Values.coturn.enabled
+         .Values.jvb.useInternalStun
+  }}
+  JVB_STUN_SERVERS: {{ printf "%s:%v" .Values.turnHost .Values.coturn.service.ports.turn | quote }}
+  {{- else if .Values.jvb.stunServers }}
+  JVB_STUN_SERVERS: {{ .Values.jvb.stunServers | quote }}
+  {{- else }}
+  JVB_DISABLE_STUN: "true"
+  {{- end }}
+  XMPP_SERVER: {{ include "jitsi-meet.xmpp.server" . | quote }}
+
+  {{- if .Values.octo.enabled }}
+  ENABLE_OCTO: "true"
+  JVB_OCTO_REGION: "all"
+  {{- end }}
+
+  {{- range $key, $value := .Values.jvb.extraEnvs }}
+  {{-   if not (kindIs "invalid" $value) }}
+  {{      $key }}: {{ tpl (toString $value) $ | quote }}
+  {{-   end }}
+  {{- end }}

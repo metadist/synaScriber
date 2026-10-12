@@ -1,0 +1,16 @@
+{{- /*
+SPDX-FileCopyrightText: 2024 Zentrum für Digitale Souveränität der Öffentlichen Verwaltung (ZenDiS) GmbH
+SPDX-FileCopyrightText: 2023 Bundesministerium des Innern und für Heimat, PG ZenDiS "Projektgruppe für Aufbau ZenDiS"
+SPDX-License-Identifier: Apache-2.0
+*/}}
+{
+  "_comment": [
+    "Overwritten labels. See the following link for possible options:",
+    "https://github.com/jitsi/jitsi-meet/blob/master/lang/main.json",
+    "See also branding.json"
+  ],
+  "welcomepage": {
+    "headerSubtitle": "Please enter the conference name",
+    "headerTitle": "Video Conference"
+  }
+}

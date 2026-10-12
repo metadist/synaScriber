@@ -1,0 +1,75 @@
+{{/*
+SPDX-FileCopyrightText: 2023 Bundesministerium des Innern und für Heimat, PG ZenDiS "Projektgruppe für Aufbau ZenDiS"
+SPDX-License-Identifier: Apache-2.0
+*/}}
+{{/*
+The job reads the JVB service to find the address to advertise, and its init.sh
+is only rendered when that service exists. Without it there is nothing to patch,
+so the job is skipped too. Keep this condition in sync with configmap.yaml.
+*/}}
+{{- if and
+       .Values.patchJVB.enabled
+       .Values.jitsi.jvb.service.enabled
+}}
+---
+apiVersion: "batch/v1"
+kind: "Job"
+metadata:
+  name: {{ include "opendesk-jitsi.jvbPatcher.fullname" . | quote }}
+  namespace: {{ include "common.names.namespace" . | quote }}
+  labels:
+    {{- include "common.labels.standard" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": "post-install,post-upgrade"
+    {{- if .Values.cleanup.deletePodsOnSuccess }}
+    "helm.sh/hook-delete-policy": "before-hook-creation,hook-succeeded"
+    {{- end }}
+spec:
+  backoffLimit: {{ .Values.patchJVB.backoffLimit }}
+  ttlSecondsAfterFinished: {{ .Values.patchJVB.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      annotations:
+        {{- if .Values.job.podAnnotations }}
+        {{- include "common.tplvalues.render" (dict "value" .Values.job.podAnnotations "context" $) | nindent 8 }}
+        {{- end }}
+    spec:
+      restartPolicy: "OnFailure"
+      {{- if or .Values.patchJVB.imagePullSecrets .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- range .Values.global.imagePullSecrets }}
+        - name: {{ . | quote }}
+        {{- end }}
+        {{- range .Values.patchJVB.imagePullSecrets }}
+        - name: {{ . | quote }}
+        {{- end }}
+      {{- end }}
+      {{- if .Values.patchJVB.podSecurityContext.enabled }}
+      securityContext: {{- omit .Values.patchJVB.podSecurityContext "enabled" | toYaml | nindent 8 }}
+      {{- end }}
+      {{- if .Values.serviceAccount.create }}
+      serviceAccountName: {{ include "common.names.fullname" . | quote }}
+      {{- end }}
+      containers:
+        - name: "advertise-ip"
+          image: "{{ coalesce .Values.patchJVB.image.registry .Values.global.registry }}/{{ .Values.patchJVB.image.repository }}:{{ .Values.patchJVB.image.tag }}"
+          imagePullPolicy: {{ .Values.patchJVB.image.imagePullPolicy | quote }}
+          {{- if .Values.patchJVB.containerSecurityContext.enabled }}
+          securityContext: {{- omit .Values.patchJVB.containerSecurityContext "enabled" | toYaml | nindent 12 }}
+          {{- end }}
+          command:
+            - "/bin/bash"
+            - "/init/init.sh"
+          volumeMounts:
+            - name: "init"
+              mountPath: "/init"
+          {{- with .Values.patchJVB.resources }}
+          resources:
+            {{ toYaml . | nindent 12 | trim }}
+          {{- end }}
+      volumes:
+        - name: "init"
+          configMap:
+            name: {{ include "common.names.fullname" . | quote }}
+...
+{{- end }}

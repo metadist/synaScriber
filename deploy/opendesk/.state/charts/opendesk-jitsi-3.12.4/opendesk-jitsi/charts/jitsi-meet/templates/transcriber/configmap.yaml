@@ -1,0 +1,46 @@
+{{- if and
+       .Values.transcriber.enabled
+       (not .Values.transcriber.useExternalTranscriber)
+}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "jitsi-meet.transcriber.fullname" . }}
+  labels:
+    {{- include "jitsi-meet.transcriber.labels" . | nindent 4 }}
+data:
+  ENABLE_TRANSCRIPTIONS: "true"
+  JIGASI_ENABLE_REST: "true"
+  JIGASI_MODE: "transcriber"
+  XMPP_SERVER: {{ include "jitsi-meet.xmpp.server" . | quote }}
+
+  {{- /*
+       Whisper backend wiring. An explicit transcriber.whisper.* value always
+       wins; otherwise, when Skynet is enabled, default to the Skynet whisper
+       service and its (internal or external) websocket URL.
+  */}}
+  {{- $customService := .Values.transcriber.whisper.customService }}
+  {{- $whisperURL := .Values.transcriber.whisper.url }}
+  {{- if .Values.skynet.enabled }}
+  {{-   if not $customService }}
+  {{-     $customService = "org.jitsi.jigasi.transcription.WhisperTranscriptionService" }}
+  {{-   end }}
+  {{-   if not $whisperURL }}
+  {{-     $whisperURL = include "jitsi-meet.skynet.whisperURL" . }}
+  {{-   end }}
+  {{- end }}
+
+  {{- with $customService }}
+  JIGASI_TRANSCRIBER_CUSTOM_SERVICE: {{ . | quote }}
+  {{- end }}
+
+  {{- with $whisperURL }}
+  JIGASI_TRANSCRIBER_WHISPER_URL: {{ . | quote }}
+  {{- end }}
+
+  {{- range $key, $value := .Values.transcriber.extraEnvs }}
+  {{-   if not (kindIs "invalid" $value) }}
+  {{      $key }}: {{ tpl (toString $value) $ | quote }}
+  {{-   end }}
+  {{- end }}
+{{- end }}

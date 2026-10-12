@@ -1,0 +1,24 @@
+{{- /*
+SPDX-FileCopyrightText: 2024 Zentrum für Digitale Souveränität der Öffentlichen Verwaltung (ZenDiS) GmbH
+SPDX-FileCopyrightText: 2023 Bundesministerium des Innern und für Heimat, PG ZenDiS "Projektgruppe für Aufbau ZenDiS"
+SPDX-License-Identifier: Apache-2.0
+*/}}
+{
+  "_comment": [
+    "See the following link for advanced branding:",
+    "https://developer.8x8.com/jaas/docs/jaas-prefs-advanced-branding"
+  ],
+  "backgroundColor": "{{ .Values.theme.colors.background }}",
+  "labels": {
+    "de": "/static/lang-overwritten-de.json",
+    "en": "/static/lang-overwritten-en.json"
+  },
+  "logoClickUrl": "https://{{ .Values.global.hosts.nubus }}.{{ .Values.global.domain }}",
+  "logoImageUrl": "/images/watermark.svg",
+  "customTheme": {
+    "palette": {
+      "action01": "{{ .Values.theme.colors.primary }}",
+      "action01Hover": "{{ .Values.theme.colors.primary }}"
+    }
+  }
+}
