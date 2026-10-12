@@ -45,7 +45,15 @@ final readonly class WhisperClient
     ) {
     }
 
-    public function transcribe(string $audio, string $language): string
+    /**
+     * Recognised text of one window, why nothing was kept (`no_speech`: the
+     * server heard none; `hallucination`: only filtered phrases), where the
+     * last kept speech ends and where each kept phrase ends (the speech
+     * server splits at short pauses), in ms from the start of the window.
+     *
+     * @return array{text: string, dropped: string|null, speechEndMs: int|null, segmentEndsMs: list<int>}
+     */
+    public function recognize(string $audio, string $language): array
     {
         $base = $this->settings->sttUrl();
         if ('' === $base) {
@@ -96,11 +104,15 @@ final readonly class WhisperClient
 
     /**
      * @param array<string, mixed> $body
+     *
+     * @return array{text: string, dropped: string|null, speechEndMs: int|null, segmentEndsMs: list<int>}
      */
-    private function filter(array $body): string
+    private function filter(array $body): array
     {
         $segments = is_array($body['segments'] ?? null) ? $body['segments'] : [['text' => $body['text'] ?? '']];
         $kept = '';
+        $heard = false;
+        $ends = [];
         foreach ($segments as $segment) {
             if (!is_array($segment)) {
                 continue;
@@ -114,15 +126,24 @@ final readonly class WhisperClient
             if ('' === $text || ($noSpeech > self::NO_SPEECH_LIMIT && $logProb < self::LOW_CONFIDENCE_LIMIT)) {
                 continue;
             }
+            $heard = true;
             if ($this->isHallucination($text) || $this->isRepetition($text)) {
                 continue;
             }
             $kept .= $raw;
+            if (is_numeric($segment['end'] ?? null)) {
+                $ends[] = (int) round((float) $segment['end'] * 1000);
+            }
         }
 
         $kept = (string) preg_replace('/\s+/u', ' ', $kept);
+        $kept = trim((string) preg_replace('/\s+([,.;:!?])/u', '$1', $kept));
+        $dropped = '' !== $kept ? null : ($heard ? 'hallucination' : 'no_speech');
 
-        return trim((string) preg_replace('/\s+([,.;:!?])/u', '$1', $kept));
+        sort($ends);
+        $ends = '' !== $kept ? array_values(array_unique($ends)) : [];
+
+        return ['text' => $kept, 'dropped' => $dropped, 'speechEndMs' => [] !== $ends ? max($ends) : null, 'segmentEndsMs' => $ends];
     }
 
     private function isHallucination(string $text): bool

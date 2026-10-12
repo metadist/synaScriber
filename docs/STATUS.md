@@ -10,13 +10,13 @@ here, not a chat message.
 |------|-------|-------|
 | `MN-0` Spike and decisions | in progress | Bridge path verified 2026-10-04; Prosody HTTP on the in-cluster address verified 2026-10-05. Captions, Element embedding, 320 px still open. |
 | `MN-1` Core prerequisites | not started | Dev MVP runs on 5.1.3 without them (see 2026-10-05). New item: plugin_data lookups must normalize keys like the writes do. |
-| `MN-2` Plugin skeleton | **dev MVP** | Plugin `synascriber` 0.2.0: settings (incl. share with participants), admin status, personal page (started and received), five locales. |
-| `MN-3` Sessions | **dev MVP** | State machine with watchdog, segments, roster from Prosody. Tests still missing. |
-| `MN-4` Prosody module | **dev MVP** | `mod_synascriber` 0.2.0: start/stop/state/health, client starts refused, attendees (Keycloak `sub` + email from the Jitsi token) for everyone present while notes are on. No busted specs yet. |
-| `MN-5` Transcriber plugin mode | **dev MVP** | `notes=<ref>` binding, windows to the plugin, 21/21 node tests. Fixed 8 s windows (no VAD yet). |
+| `MN-2` Plugin skeleton | **dev MVP** | Plugin `synascriber` 0.3.0: settings (share with participants, live captions), admin status, personal page (started and received), five locales. |
+| `MN-3` Sessions | **dev MVP** | State machine with watchdog, segments (idempotent per speaker and window), roster from Prosody, the transcriber session API of [02 §5.5](./02_architecture.md#55-transcriber--plugin-bearer-token-cluster-internal-source) incl. `preview`. Unit tests still missing. |
+| `MN-4` Prosody module | **dev MVP** | `mod_synascriber` 0.3.0: start/stop/state/health (22-character session ids), client starts refused, attendees (Keycloak `sub` + email from the Jitsi token) for everyone present while notes are on. No busted specs yet. |
+| `MN-5` Transcriber plugin mode | **dev MVP** | synaplan `sidecars/synaplan-transcriber` (branch `feat/transcriber-live-captions`): session API, previews every 1.5 s for live captions, windows end at pauses (0.7 s), silent stretches dropped, 8 s hard cut as the limit; 32/32 node tests. Deployed from a git ref. |
 | `MN-6` Transcript file | **dev MVP** | One Markdown copy per signed-in participant in their Sources › Generated (source `generated`, kind `document`, chosen folder), vectorized; speakers, participants, times. |
-| `MN-7` Jitsi surface | **dev MVP** | Floating button, dialog, banner, outcome with file link; Keycloak PKCE silent sign-in. |
-| `MN-8` Engine and quality | in progress | German Whisper on our GPU host; `synaplan-stt` image + `stt` chart in synaplan-charts#51. |
+| `MN-7` Jitsi surface | **dev MVP** | Floating button, dialog, banner, outcome with file link; Keycloak PKCE silent sign-in; live caption strip for everyone, growing while someone speaks (first caption ~2.5 s after start). |
+| `MN-8` Engine and quality | in progress | German Whisper on our GPU host with Silero VAD (no more phantom "Vielen Dank."); `synaplan-stt` image + `stt` chart in synaplan-charts#51, VAD on by default. |
 | `MN-9` v1.0 release | not started | |
 | `MN-10` v1.1 | not started | |
 | `MN-11` v1.2 | not started | |
@@ -30,6 +30,71 @@ here, not a chat message.
 | 2026-10-05 | Product owner: transcripts land for **all participants** in their Generated overview; pushing to OpenCloud / Nextcloud comes from there in a later release. D6 and D12 rewritten accordingly. |
 
 ## Log
+
+**2026-10-11 — Step-by-step live captions; plugin on the transcriber
+session API.** The dev cluster ran a transcriber copy that existed in no repository
+(the MVP interface); synaplan `main` already spoke the session API of
+[02 §5.5](./02_architecture.md#55-transcriber--plugin-bearer-token-cluster-internal-source).
+The plugin (0.3.0) now implements it: `bind` with meeting-id check and
+the caption switch, `audio` as multipart with `dropped` reasons and
+idempotent segments, `events` (`connected` sets the time origin,
+`stt-failure` counts gaps and the transcript says parts are missing,
+`finished` writes the files), 22-character session ids (Prosody 0.3.0
+accepts them). New: `preview`, recognised and never stored. The
+transcriber (synaplan branch `feat/transcriber-live-captions`) previews the
+window so far every 1.5 s while someone speaks and sends it as an interim
+caption; the preview's speech end decides the window boundary (0.7 s of
+silence ⇒ `cut: "pause"`), and 4 s without speech are dropped before they
+become a window. `deploy.sh` ships the transcriber from a git ref, never
+from the synaplan working copy. Admin switch **live captions** (default on;
+off ⇒ no previews, per-window windows only).
+
+Dev cluster, `tests/e2e/meeting-notes.mjs` (now also measures captions at
+the second participant):
+
+| Run | Captions at the other participant | Transcriber | Transcript |
+|-----|-----------------------------------|-------------|------------|
+| Before (per window) | first ~10 s after start, one block per 8 s | 8 s hard cuts | sentences cut mid-word |
+| Both talking, 45 s | first after 2.6 s; 36 messages (28 interim, 8 final); a line grows ~3.8 s before it is final | 10 windows, 41 previews, 5 pause cuts, 3 silent stretches dropped | mostly whole sentences; long sentences without a pause still split at 8 s (a boundary word can go missing) |
+| Second person silent (room noise, −50 dBFS), 40 s | first after 2.4 s | 6 windows, 6 silent stretches dropped | **no line from the silent person** (no "Vielen Dank.") |
+
+Open: overlap at hard cuts so a boundary word is not lost; unit tests for
+the new plugin routes; GPU load per speaker with previews (one 1–2 s
+window every 1.5 s while speaking, none while silent).
+
+**2026-10-11 — Phantom "Vielen Dank." and live captions.** Real meetings
+on the dev cluster had "Vielen Dank." lines nobody said, always in the
+stream of the person who was listening. Cause: every unmuted participant's
+audio goes to Whisper in 8 s windows, also when they are silent; Whisper
+turns silence and room noise into stock phrases. Measured on the GPU host
+(German turbo model, windows through Opus like Jitsi audio):
+
+| Window (8 s) | VAD off (until today) | VAD on |
+|--------------|-----------------------|--------|
+| Digital silence | "Vielen Dank." | empty |
+| Quiet room noise (pink, −50 dBFS) | "Vielen Dank." | empty |
+| Other speaker leaking in at −35 dB | an invented sentence | empty |
+| Normal speech | correct | identical |
+| 2 s speech, then quiet | correct | identical |
+
+Fix: Silero VAD in `whisper-server` (`--vad`; the model was already on the
+host), live on the dev cluster since 2026-10-11. A no-speech window now returns empty text and the
+plugin writes nothing. The `stt` chart and image (synaplan-charts#51) turn
+VAD on by default so other targets do not regress.
+
+Live captions: the transcriber already sent every result back into the
+meeting; Jitsi hands it to all participants as a message from
+`transcriber` (verified: 6 results in 30 s at the second participant), but
+nobody saw it because Jitsi's own subtitles were off. The loader now shows
+a small caption strip (bottom centre, above the toolbar and the speaker
+name, at most 640 px wide, the last two speakers, names from Jitsi's
+roster, "You" for your own speech, fades after 7 s), for everyone in the
+meeting, signed in or not, with a per-browser **Captions: on/off** switch
+next to the notes button and a hide button on the strip. Interim results
+(`is_interim`) already update the same line, so step-by-step captions need
+no UI change. Today the text arrives per 8 s window (about 9–10 s after it
+was said). E2E checks own captions ("You:"), the other speaker's name, and
+the off/on switch.
 
 **2026-10-05 — Transcripts for every participant (plugin 0.2.0, Prosody
 module 0.2.0).** Product owner: the transcript lands for all participants

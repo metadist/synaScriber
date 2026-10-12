@@ -1,7 +1,8 @@
 // End-to-end journey J-MN-2/J-MN-3 against a real openDesk Jitsi:
 // two signed-in people join a meeting with speech audio; the first starts
 // meeting notes from the floating button, the second sees the banner; after
-// the talk the first stops. Both get a "saved" notice that links to their own
+// the talk the first stops. While they talk, both see live captions (the
+// second also switches them off and on). Both get a "saved" notice that links to their own
 // copy, and (with SYN_SYNAPLAN) both find it in Synaplan Sources › Generated.
 //
 //   SYN_MEET=https://meet.example.org SYN_ACCOUNT=https://id.example.org/realms/opendesk/account/ \
@@ -36,11 +37,13 @@ const LABELS = {
     button: 'Meeting notes', language: 'Meeting language', start: 'Start meeting notes', running: /Notes on/, banner: /Notes on · started by/,
     stop: 'Stop notes', saved: /Notes saved in Synaplan Sources › Generated .* for everyone who was signed in: 2 people/, open: 'Open the notes',
     received: /The meeting notes .+ started are in your Synaplan Sources › Generated/,
+    captions: 'Live captions', captionsOn: 'Captions: on', captionsOff: 'Captions: off', you: 'You',
   },
   de: {
     button: 'Mitschrift', language: 'Sprache der Besprechung', start: 'Mitschrift starten', running: /Mitschrift läuft/, banner: /Mitschrift läuft · gestartet von/,
     stop: 'Mitschrift beenden', saved: /Mitschrift gespeichert in Synaplan Quellen › Erzeugt .* für alle Angemeldeten: 2 Personen/, open: 'Mitschrift öffnen',
     received: /Die von .+ gestartete Mitschrift liegt in Ihren Synaplan Quellen › Erzeugt/,
+    captions: 'Live-Untertitel', captionsOn: 'Untertitel: an', captionsOff: 'Untertitel: aus', you: 'Sie',
   },
 }
 const L = LABELS[process.env.SYN_UI || 'en']
@@ -140,6 +143,13 @@ async function findInGenerated({ page, label, user, password }) {
 }
 
 const notes = (page) => page.locator('#synascriber')
+async function captionsShow(page, pattern, what) {
+  await page.getByRole('log', { name: L.captions }).filter({ hasText: pattern }).first().waitFor({ timeout: 30000 }).catch(async (error) => {
+    await page.screenshot({ path: `${OUT}/failed-${what}.png` })
+    throw new Error(`${what}: ${error.message.split('\n')[0]}`)
+  })
+}
+
 async function waitForText(page, pattern, timeoutMs, what) {
   await notes(page).getByText(pattern).first().waitFor({ timeout: timeoutMs }).catch(async (error) => {
     await page.screenshot({ path: `${OUT}/failed-${what}.png` })
@@ -156,6 +166,15 @@ log('A', 'floating button visible')
 await a.page.screenshot({ path: `${OUT}/1-button.png` })
 
 const b = await participant('B', need('SYN_USER2'), need('SYN_PASS2'), need('SYN_AUDIO2'), { noLoader: B_NO_LOADER })
+// Every caption message B's Jitsi receives, interim and final, with its arrival time.
+await b.page.evaluate(() => {
+  window.__caps = []
+  APP.conference._room.on('conference.non_participant_message_received', (from, message) => {
+    if (message?.type === 'transcription-result') {
+      window.__caps.push({ t: Date.now(), interim: message.is_interim === true, id: message.message_id, text: message.transcript?.[0]?.text || '' })
+    }
+  })
+})
 
 await notes(a.page).getByRole('button', { name: L.button, exact: true }).click()
 await notes(a.page).getByRole('dialog').waitFor()
@@ -165,6 +184,7 @@ await notes(a.page).getByRole('button', { name: L.start }).click()
 log('A', 'start clicked (meeting language: Deutsch)')
 
 await waitForText(a.page, L.running, 45000, 'running-for-starter')
+const runningAt = Date.now()
 log('A', 'notes running')
 await a.page.screenshot({ path: `${OUT}/3-running-starter.png` })
 if (!B_NO_LOADER) {
@@ -177,7 +197,37 @@ const jitsiSays = await b.page.evaluate(() => APP.store.getState()['features/tra
 log('B', `Jitsi's own indicator: isTranscribing=${jitsiSays}`)
 
 log('both', `talking for ${SECONDS}s`)
-await a.page.waitForTimeout(SECONDS * 1000)
+const talkUntil = Date.now() + SECONDS * 1000
+await captionsShow(a.page, new RegExp(`${L.you}:`), 'captions-own-speech')
+log('A', 'sees captions of their own speech')
+if (!B_NO_LOADER) {
+  const nameA = await a.page.evaluate(() => APP.conference.getLocalDisplayName?.() || APP.store.getState()['features/base/settings'].displayName || '')
+  await captionsShow(b.page, new RegExp(`${nameA || '.+'}:`), 'captions-other-speaker')
+  log('B', `sees captions of ${nameA || 'the other speaker'}`)
+  await b.page.screenshot({ path: `${OUT}/4b-captions.png` })
+  await notes(b.page).getByRole('button', { name: L.captionsOn }).click()
+  await b.page.getByRole('log', { name: L.captions }).waitFor({ state: 'hidden', timeout: 5000 })
+  await notes(b.page).getByRole('button', { name: L.captionsOff }).click()
+  await captionsShow(b.page, /:/, 'captions-back-on')
+  log('B', 'switched captions off and on again')
+}
+await a.page.waitForTimeout(Math.max(0, talkUntil - Date.now()))
+
+const caps = await b.page.evaluate(() => window.__caps)
+const interim = caps.filter((c) => c.interim)
+const firstMs = caps.length ? caps[0].t - runningAt : null
+const grow = Object.values(caps.reduce((lines, c) => {
+  const line = lines[c.id] || (lines[c.id] = { first: c.t, final: null })
+  if (!c.interim) line.final = c.t
+  return lines
+}, {})).filter((line) => line.final !== null).map((line) => line.final - line.first)
+log('B', `captions: ${caps.length} messages (${interim.length} interim, ${caps.length - interim.length} final); first ${firstMs === null ? '-' : (firstMs / 1000).toFixed(1)} s after start; a line grows ${grow.length ? (grow.reduce((a, b) => a + b, 0) / grow.length / 1000).toFixed(1) : '-'} s on average before it is final`)
+if (interim.length === 0) {
+  throw new Error('no interim captions arrived: the line does not grow while someone speaks')
+}
+if (firstMs === null || firstMs > 8000) {
+  throw new Error(`first caption ${firstMs} ms after start (expected within 8 s)`)
+}
 
 await notes(a.page).getByRole('button', { name: L.stop }).click()
 log('A', 'stop clicked')

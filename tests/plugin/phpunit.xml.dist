@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit bootstrap="bootstrap.php"
+         colors="true"
+         cacheDirectory="/tmp/synascriber-phpunit-cache"
+         failOnWarning="true"
+         failOnRisky="true"
+         failOnDeprecation="true"
+         displayDetailsOnTestsThatTriggerDeprecations="true">
+    <testsuites>
+        <testsuite name="synaScriber plugin">
+            <directory>Unit</directory>
+        </testsuite>
+    </testsuites>
+    <extensions>
+        <!-- The plugin's services are final readonly; tests replace them with mocks. -->
+        <bootstrap class="DG\BypassFinals\PHPUnitExtension"/>
+    </extensions>
+</phpunit>

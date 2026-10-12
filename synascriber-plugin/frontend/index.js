@@ -10,6 +10,7 @@ const COPY = {
     stt_url: 'Speech-to-text server', prosody_url: 'Jitsi connection (Prosody)', secret: 'Shared secret with Jitsi', secret_set: 'set', secret_missing: 'missing',
     save: 'Save settings', saved: 'Settings saved.', checks: 'Status', check_jitsi: 'Jitsi answers', check_speech: 'Speech-to-text server answers', check_owner: 'Owner account set',
     ok: 'OK', not_ok: 'Not reachable', error: 'Could not load the meeting notes. Reload the page.',
+    captions: 'Live captions in the meeting while notes are on',
     from: 'started by {name}', all_generated: 'Show in Sources › Generated', share: 'Give every signed-in participant a copy in their Sources › Generated (off: only the person who started gets it)',
   },
   de: {
@@ -20,6 +21,7 @@ const COPY = {
     stt_url: 'Spracherkennungs-Server', prosody_url: 'Verbindung zu Jitsi (Prosody)', secret: 'Gemeinsames Geheimnis mit Jitsi', secret_set: 'gesetzt', secret_missing: 'fehlt',
     save: 'Einstellungen speichern', saved: 'Einstellungen gespeichert.', checks: 'Status', check_jitsi: 'Jitsi antwortet', check_speech: 'Spracherkennungs-Server antwortet', check_owner: 'Besitzerkonto gesetzt',
     ok: 'OK', not_ok: 'Nicht erreichbar', error: 'Die Mitschriften konnten nicht geladen werden. Laden Sie die Seite neu.',
+    captions: 'Live-Untertitel in der Besprechung, solange die Mitschrift läuft',
     from: 'gestartet von {name}', all_generated: 'In Quellen › Erzeugt anzeigen', share: 'Alle angemeldeten Teilnehmenden erhalten eine Kopie in Quellen › Erzeugt (aus: nur die Person, die gestartet hat)',
   },
   es: {
@@ -30,6 +32,7 @@ const COPY = {
     stt_url: 'Servidor de voz a texto', prosody_url: 'Conexión con Jitsi (Prosody)', secret: 'Secreto compartido con Jitsi', secret_set: 'definido', secret_missing: 'falta',
     save: 'Guardar ajustes', saved: 'Ajustes guardados.', checks: 'Estado', check_jitsi: 'Jitsi responde', check_speech: 'El servidor de voz a texto responde', check_owner: 'Cuenta propietaria definida',
     ok: 'OK', not_ok: 'No accesible', error: 'No se pudieron cargar las notas. Recarga la página.',
+    captions: 'Subtítulos en directo en la reunión mientras se toman notas',
     from: 'iniciadas por {name}', all_generated: 'Mostrar en Fuentes › Generados', share: 'Cada participante con sesión iniciada recibe una copia en Fuentes › Generados (desactivado: solo quien las inició)',
   },
   fr: {
@@ -40,6 +43,7 @@ const COPY = {
     stt_url: 'Serveur de reconnaissance vocale', prosody_url: 'Connexion à Jitsi (Prosody)', secret: 'Secret partagé avec Jitsi', secret_set: 'défini', secret_missing: 'manquant',
     save: 'Enregistrer les réglages', saved: 'Réglages enregistrés.', checks: 'État', check_jitsi: 'Jitsi répond', check_speech: 'Le serveur de reconnaissance vocale répond', check_owner: 'Compte propriétaire défini',
     ok: 'OK', not_ok: 'Injoignable', error: 'Impossible de charger les notes. Rechargez la page.',
+    captions: 'Sous-titres en direct dans la réunion pendant la prise de notes',
     from: 'lancées par {name}', all_generated: 'Afficher dans Sources › Générés', share: 'Chaque participant connecté reçoit une copie dans Sources › Générés (désactivé : seule la personne qui a lancé les notes)',
   },
   tr: {
@@ -50,6 +54,7 @@ const COPY = {
     stt_url: 'Konuşmadan metne sunucusu', prosody_url: 'Jitsi bağlantısı (Prosody)', secret: 'Jitsi ile ortak gizli anahtar', secret_set: 'ayarlı', secret_missing: 'eksik',
     save: 'Ayarları kaydet', saved: 'Ayarlar kaydedildi.', checks: 'Durum', check_jitsi: 'Jitsi yanıt veriyor', check_speech: 'Konuşmadan metne sunucusu yanıt veriyor', check_owner: 'Sahip hesap ayarlı',
     ok: 'Tamam', not_ok: 'Erişilemiyor', error: 'Notlar yüklenemedi. Sayfayı yenileyin.',
+    captions: 'Notlar açıkken toplantıda canlı altyazı',
     from: '{name} başlattı', all_generated: 'Kaynaklar › Üretilen bölümünde göster', share: 'Oturum açan her katılımcı Kaynaklar › Üretilen bölümünde bir kopya alır (kapalı: yalnızca başlatan kişi)',
   },
 }
@@ -124,6 +129,8 @@ function adminCard(base, status, onSaved) {
   enabled.checked = !!s.enabled
   const share = h('input', { type: 'checkbox', id: 'syn-share' })
   share.checked = !!s.share_with_participants
+  const captions = h('input', { type: 'checkbox', id: 'syn-captions' })
+  captions.checked = s.captions !== false
   const langs = Object.keys(LANGUAGES).map((code) => {
     const box = h('input', { type: 'checkbox', value: code, id: `syn-lang-${code}` })
     box.checked = s.languages.includes(code)
@@ -142,6 +149,7 @@ function adminCard(base, status, onSaved) {
   const form = h('form', { class: 'mt-4 grid gap-3' }, [
     h('label', { class: 'inline-flex items-center gap-2 txt-primary text-sm', for: 'syn-enabled' }, [enabled, h('span', { text: t('enabled') })]),
     h('label', { class: 'inline-flex items-center gap-2 txt-primary text-sm', for: 'syn-share' }, [share, h('span', { text: t('share') })]),
+    h('label', { class: 'inline-flex items-center gap-2 txt-primary text-sm', for: 'syn-captions' }, [captions, h('span', { text: t('captions') })]),
     h('div', {}, [h('div', { class: 'txt-secondary text-sm', text: t('languages') }), h('div', { class: 'mt-1' }, langs)]),
     h('label', { class: 'txt-secondary text-sm', for: 'syn-def-lang', text: t('default_language') }), defLang,
     h('label', { class: 'txt-secondary text-sm', for: 'syn-folder', text: t('default_folder') }), folder,
@@ -156,6 +164,7 @@ function adminCard(base, status, onSaved) {
     const body = {
       enabled: enabled.checked,
       share_with_participants: share.checked,
+      captions: captions.checked,
       languages: langs.map((l) => l.querySelector('input')).filter((b) => b.checked).map((b) => b.value),
       default_language: defLang.value,
       default_folder: folder.value,

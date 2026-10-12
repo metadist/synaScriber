@@ -1,0 +1,19 @@
+includes:
+    - /var/www/backend/vendor/phpstan/phpstan-doctrine/extension.neon
+
+parameters:
+    level: 8
+    paths:
+        - ../../synascriber-plugin/backend
+        - Unit
+    bootstrapFiles:
+        - bootstrap.php
+    tmpDir: /tmp/synascriber-phpstan
+    ignoreErrors:
+        # The plugin's services are final; PHPUnit mocks them because the
+        # BypassFinals extension removes `final` at runtime, which PHPStan
+        # cannot see. Same exception as Synaplan's own tests.
+        -
+            identifiers:
+                - method.unresolvableReturnType
+            path: Unit/*

@@ -32,7 +32,12 @@ final readonly class SessionStore
      */
     public function find(string $ref): ?array
     {
-        return $this->data->get($this->owner(), self::PLUGIN, self::TYPE_SESSION, $ref);
+        $session = $this->data->get($this->owner(), self::PLUGIN, self::TYPE_SESSION, self::sessionKey($ref));
+        if (null === $session && 1 === preg_match('/^[a-f0-9]{16}$/', $ref)) {
+            $session = $this->data->get($this->owner(), self::PLUGIN, self::TYPE_SESSION, $ref);
+        }
+
+        return $session;
     }
 
     /**
@@ -40,7 +45,9 @@ final readonly class SessionStore
      */
     public function save(array $session): void
     {
-        $this->data->set($this->owner(), self::PLUGIN, self::TYPE_SESSION, (string) $session['ref'], $session);
+        $ref = (string) $session['ref'];
+        $key = 1 === preg_match('/^[a-f0-9]{16}$/', $ref) ? $ref : self::sessionKey($ref);
+        $this->data->set($this->owner(), self::PLUGIN, self::TYPE_SESSION, $key, $session);
     }
 
     public function activeRefForRoom(string $room): ?string
@@ -63,12 +70,24 @@ final readonly class SessionStore
     }
 
     /**
-     * @param array{at: int, speaker: string, text: string} $segment
+     * One recognised window. The key is fixed by window start, speaker and
+     * window number, so a retried window replaces itself.
+     *
+     * @param array{at: int, speaker: string, text: string, seq: int} $segment
      */
     public function addSegment(string $ref, array $segment): void
     {
-        $key = sprintf('%013d_%s', $segment['at'], preg_replace('/[^a-z0-9]/', '_', strtolower($segment['speaker'])));
-        $this->data->set($this->owner(), self::PLUGIN, self::SEGMENT_PREFIX.$ref, $key, $segment);
+        $this->data->set($this->owner(), self::PLUGIN, self::segmentType($ref), self::segmentKey($segment), $segment);
+    }
+
+    /**
+     * @param array{at: int, speaker: string, seq: int} $segment
+     *
+     * @return array<string, mixed>|null
+     */
+    public function findSegment(string $ref, array $segment): ?array
+    {
+        return $this->data->get($this->owner(), self::PLUGIN, self::segmentType($ref), self::segmentKey($segment));
     }
 
     /**
@@ -76,7 +95,7 @@ final readonly class SessionStore
      */
     public function segments(string $ref): array
     {
-        $rows = $this->data->listWithKeys($this->owner(), self::PLUGIN, self::SEGMENT_PREFIX.$ref);
+        $rows = $this->data->listWithKeys($this->owner(), self::PLUGIN, self::segmentType($ref));
         usort($rows, static fn (array $a, array $b): int => strcmp($a['key'], $b['key']));
 
         $segments = [];
@@ -92,7 +111,7 @@ final readonly class SessionStore
 
     public function deleteSegments(string $ref): void
     {
-        $this->data->deleteAllByType($this->owner(), self::PLUGIN, self::SEGMENT_PREFIX.$ref);
+        $this->data->deleteAllByType($this->owner(), self::PLUGIN, self::segmentType($ref));
     }
 
     /**
@@ -110,6 +129,24 @@ final readonly class SessionStore
         usort($sessions, static fn (array $a, array $b): int => ($b['startedAt'] ?? 0) <=> ($a['startedAt'] ?? 0));
 
         return array_slice($sessions, 0, $limit);
+    }
+
+    private static function sessionKey(string $ref): string
+    {
+        return 's_'.substr(hash('sha256', $ref), 0, 40);
+    }
+
+    private static function segmentType(string $ref): string
+    {
+        return self::SEGMENT_PREFIX.(1 === preg_match('/^[a-f0-9]{16}$/', $ref) ? $ref : substr(hash('sha256', $ref), 0, 40));
+    }
+
+    /**
+     * @param array{at: int, speaker: string, seq?: int} $segment
+     */
+    private static function segmentKey(array $segment): string
+    {
+        return sprintf('%013d_%s_%06d', $segment['at'], preg_replace('/[^a-z0-9]/', '_', strtolower($segment['speaker'])), $segment['seq'] ?? 0);
     }
 
     private static function roomKey(string $room): string

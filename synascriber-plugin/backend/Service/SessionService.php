@@ -25,7 +25,11 @@ final readonly class SessionService
     private const CONNECT_GRACE_SECONDS = 45;
     /** How often a read re-checks Jitsi for a running session. */
     private const JITSI_CHECK_SECONDS = 20;
-    private const MAX_WINDOW_BYTES = 4 * 1024 * 1024;
+    private const MAX_WINDOW_BYTES = 2 * 1024 * 1024;
+    private const MAX_WINDOW_MS = 30_000;
+    private const CUTS = ['pause', 'soft', 'hard', 'stop'];
+    /** Windows the transcriber may have in flight per session. */
+    private const MAX_CONCURRENCY = 2;
     /** A finished session stays visible to its starter in the room this long. */
     private const RECENT_SECONDS = 300;
 
@@ -60,7 +64,7 @@ final readonly class SessionService
 
         $now = time();
         $session = [
-            'ref' => bin2hex(random_bytes(8)),
+            'ref' => rtrim(strtr(base64_encode(random_bytes(16)), '+/', '-_'), '='),
             'room' => $room,
             'starterId' => (int) $user->getId(),
             'starterName' => $user->getDisplayName(),
@@ -134,48 +138,198 @@ final readonly class SessionService
     }
 
     /**
-     * Transcriber connected for this session: only while it is active.
+     * The transcriber binds a bridge connection, on connect and every 30 s.
      *
-     * @return array<string, mixed>|null
+     * @return array<string, mixed>
      */
-    public function bind(string $ref): ?array
+    public function bind(string $ref, string $meetingId): array
     {
         $session = $this->store->find($ref);
-        if (null === $session || !in_array($session['state'], ['starting', 'running', 'stopping'], true)) {
-            return null;
+        if (null === $session) {
+            throw new SessionException('unknown_session', 'These meeting notes do not exist.', 404);
         }
-        if (empty($session['connectedAt'])) {
-            $session['connectedAt'] = time();
+        if (!in_array($session['state'], ['starting', 'running', 'stopping'], true)) {
+            throw new SessionException('not_active', 'These meeting notes are not active.', 409);
+        }
+        $known = (string) ($session['meetingId'] ?? '');
+        if ('' !== $known && '' !== $meetingId && $known !== $meetingId) {
+            throw new SessionException('wrong_meeting', 'These meeting notes belong to another meeting.', 409);
+        }
+        if ('' === $known && '' !== $meetingId) {
+            $session['meetingId'] = $meetingId;
             $this->store->save($session);
+        }
+
+        $speakers = [];
+        foreach (is_array($session['roster'] ?? null) ? $session['roster'] : [] as $endpoint => $name) {
+            $speakers[(string) $endpoint] = ['name' => (string) $name];
+        }
+
+        return [
+            'sessionId' => substr(hash('sha256', 'session:'.$ref), 0, 16),
+            'state' => $session['state'],
+            'language' => $session['language'],
+            'profile' => 'balanced',
+            'captions' => $this->settings->captionsOn(),
+            'glossary' => [],
+            'speakers' => $speakers,
+            'excluded' => [],
+            'maxConcurrency' => self::MAX_CONCURRENCY,
+        ];
+    }
+
+    /**
+     * One speech window of one speaker: recognised, stored once, answered.
+     *
+     * @param array{endpointId: string, seq: int, t0Ms: int, t1Ms: int, cut: string, audio: string} $window
+     *
+     * @return array<string, mixed>
+     */
+    public function window(string $ref, array $window): array
+    {
+        $session = $this->accepting($ref, ['running', 'stopping']);
+        $this->assertWindow($window);
+        if (!in_array($window['cut'], self::CUTS, true)) {
+            throw new SessionException('invalid_window', 'Unknown window cut.', 422);
+        }
+
+        $segment = ['at' => $this->originMs($session) + $window['t0Ms'], 'speaker' => $window['endpointId'], 'seq' => $window['seq']];
+        $answer = ['seq' => $window['seq'], 'language' => $session['language'], 'segmentSeq' => $window['seq']];
+        $stored = $this->store->findSegment($ref, $segment);
+        if (null !== $stored) {
+            return $answer + ['text' => (string) ($stored['text'] ?? ''), 'dropped' => 'duplicate', 'speaker' => $this->speakerName($session, $window['endpointId'])];
+        }
+
+        $result = $this->whisper->recognize($window['audio'], (string) $session['language']);
+        $session['lastAudioAt'] = time();
+        if ('' !== $result['text']) {
+            $this->store->addSegment($ref, $segment + ['text' => $result['text']]);
+            $session['segmentCount'] = (int) ($session['segmentCount'] ?? 0) + 1;
+            $session = $this->learnSpeaker($session, $window['endpointId']);
+        }
+        $this->store->save($session);
+
+        return $answer + ['text' => $result['text'], 'dropped' => $result['dropped'], 'speaker' => $this->speakerName($session, $window['endpointId'])];
+    }
+
+    /**
+     * Live caption of the window so far: recognised, never stored.
+     *
+     * @param array{endpointId: string, seq: int, t0Ms: int, t1Ms: int, audio: string} $window
+     *
+     * @return array<string, mixed>
+     */
+    public function preview(string $ref, array $window): array
+    {
+        $session = $this->accepting($ref, ['running']);
+        if (!$this->settings->captionsOn()) {
+            throw new SessionException('captions_off', 'Live captions are switched off.', 403);
+        }
+        $this->assertWindow($window);
+        $result = $this->whisper->recognize($window['audio'], (string) $session['language']);
+
+        return [
+            'seq' => $window['seq'],
+            'text' => $result['text'],
+            'language' => $session['language'],
+            'dropped' => $result['dropped'],
+            'speechEndMs' => $result['speechEndMs'],
+            'segmentEndsMs' => $result['segmentEndsMs'],
+        ];
+    }
+
+    /**
+     * Transcriber lifecycle: connected, speaker start/stop, gaps, the end.
+     *
+     * @param array<string, mixed> $event
+     */
+    public function event(string $ref, array $event): void
+    {
+        $session = $this->store->find($ref);
+        if (null === $session) {
+            throw new SessionException('unknown_session', 'These meeting notes do not exist.', 404);
+        }
+        $type = (string) ($event['type'] ?? '');
+        if ('connected' === $type) {
+            if (empty($session['connectedAt'])) {
+                $session['connectedAt'] = time();
+                $session['originMs'] = is_numeric($event['at'] ?? null) ? (int) $event['at'] : time() * 1000;
+                $this->store->save($session);
+            }
+
+            return;
+        }
+        if ('stt-failure' === $type) {
+            $session['gaps'] = (int) ($session['gaps'] ?? 0) + 1;
+            $this->store->save($session);
+            $this->logger->warning('synascriber: speech recognition gap', ['ref' => $ref, 'detail' => mb_substr((string) ($event['detail'] ?? ''), 0, 200)]);
+
+            return;
+        }
+        if ('finished' === $type) {
+            $this->finish($ref, (string) ($session['endReason'] ?? 'bridge_closed'));
+
+            return;
+        }
+        if (!in_array($type, ['speaker-start', 'speaker-stop', 'session-end'], true)) {
+            throw new SessionException('unknown_event', sprintf('Unknown transcriber event "%s".', mb_substr($type, 0, 40)), 422);
+        }
+    }
+
+    /**
+     * @param list<string> $states
+     *
+     * @return array<string, mixed>
+     */
+    private function accepting(string $ref, array $states): array
+    {
+        $session = $this->store->find($ref);
+        if (null === $session) {
+            throw new SessionException('unknown_session', 'These meeting notes do not exist.', 404);
+        }
+        if (!in_array($session['state'], $states, true)) {
+            throw new SessionException('not_accepting', 'These meeting notes do not accept audio any more.', 409);
         }
 
         return $session;
     }
 
-    public function transcribeWindow(string $ref, string $speaker, int $atMs, string $audio): string
+    /**
+     * @param array{endpointId: string, seq: int, t0Ms: int, t1Ms: int, audio: string} $window
+     */
+    private function assertWindow(array $window): void
     {
-        $session = $this->store->find($ref);
-        if (null === $session || !in_array($session['state'], ['running', 'stopping'], true)) {
-            throw new SessionException('not_active', 'These meeting notes are not active.', 410);
+        if ('' === $window['audio'] || strlen($window['audio']) > self::MAX_WINDOW_BYTES) {
+            throw new SessionException('invalid_audio', 'The audio window is empty or larger than 2 MB.', 422);
         }
-        if ('' === $audio || strlen($audio) > self::MAX_WINDOW_BYTES) {
-            throw new SessionException('invalid_audio', 'The audio window is empty or too large.', 422);
+        if (1 !== preg_match('/^[A-Za-z0-9_-]{1,80}$/', $window['endpointId'])) {
+            throw new SessionException('invalid_window', 'Unknown speaker.', 422);
         }
-        if (!preg_match('/^[A-Za-z0-9_-]{1,80}$/', $speaker)) {
-            throw new SessionException('invalid_speaker', 'Unknown speaker tag.', 422);
+        if ($window['seq'] < 0 || $window['t0Ms'] < 0 || $window['t1Ms'] <= $window['t0Ms'] || $window['t1Ms'] - $window['t0Ms'] > self::MAX_WINDOW_MS) {
+            throw new SessionException('invalid_window', 'The window times are not valid (at most 30 s).', 422);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $session
+     */
+    private function originMs(array $session): int
+    {
+        if (isset($session['originMs']) && is_numeric($session['originMs'])) {
+            return (int) $session['originMs'];
         }
 
-        $text = $this->whisper->transcribe($audio, (string) $session['language']);
-        $session['lastAudioAt'] = time();
-        if ('' !== $text) {
-            $at = $atMs > 0 ? $atMs : (int) (microtime(true) * 1000);
-            $this->store->addSegment($ref, ['at' => $at, 'speaker' => $speaker, 'text' => $text]);
-            $session['segmentCount'] = (int) ($session['segmentCount'] ?? 0) + 1;
-            $session = $this->learnSpeaker($session, $speaker);
-        }
-        $this->store->save($session);
+        return (int) ($session['connectedAt'] ?? $session['startedAt']) * 1000;
+    }
 
-        return $text;
+    /**
+     * @param array<string, mixed> $session
+     */
+    private function speakerName(array $session, string $endpoint): string
+    {
+        $roster = is_array($session['roster'] ?? null) ? $session['roster'] : [];
+
+        return (string) ($roster[$endpoint] ?? '');
     }
 
     /**

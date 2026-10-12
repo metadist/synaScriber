@@ -14,11 +14,11 @@ final class TranscriptRenderer
     private const MERGE_GAP_MS = 30_000;
 
     private const COPY = [
-        'en' => ['present' => 'Participants', 'title' => 'Meeting notes', 'started_by' => 'Started by', 'time' => 'Time', 'language' => 'Language', 'speakers' => 'Speakers', 'participant' => 'Participant', 'audio' => 'Audio was not kept. This text was produced by speech recognition and can contain mistakes.', 'name' => 'English'],
-        'de' => ['present' => 'Teilnehmende', 'title' => 'Mitschrift', 'started_by' => 'Gestartet von', 'time' => 'Zeit', 'language' => 'Sprache', 'speakers' => 'Sprechende', 'participant' => 'Teilnehmende Person', 'audio' => 'Audio wurde nicht gespeichert. Dieser Text stammt aus der Spracherkennung und kann Fehler enthalten.', 'name' => 'Deutsch'],
-        'es' => ['present' => 'Participantes', 'title' => 'Notas de la reunión', 'started_by' => 'Iniciado por', 'time' => 'Hora', 'language' => 'Idioma', 'speakers' => 'Participantes que hablaron', 'participant' => 'Participante', 'audio' => 'El audio no se guardó. Este texto procede del reconocimiento de voz y puede contener errores.', 'name' => 'Español'],
-        'fr' => ['present' => 'Participants', 'title' => 'Notes de réunion', 'started_by' => 'Lancé par', 'time' => 'Heure', 'language' => 'Langue', 'speakers' => 'Intervenants', 'participant' => 'Participant', 'audio' => "L'audio n'a pas été conservé. Ce texte provient de la reconnaissance vocale et peut contenir des erreurs.", 'name' => 'Français'],
-        'tr' => ['present' => 'Katılımcılar', 'title' => 'Toplantı notları', 'started_by' => 'Başlatan', 'time' => 'Saat', 'language' => 'Dil', 'speakers' => 'Konuşanlar', 'participant' => 'Katılımcı', 'audio' => 'Ses kaydedilmedi. Bu metin konuşma tanımadan gelir ve hata içerebilir.', 'name' => 'Türkçe'],
+        'en' => ['gaps' => 'Some parts are missing: speech recognition was not available for a moment.', 'present' => 'Participants', 'title' => 'Meeting notes', 'started_by' => 'Started by', 'time' => 'Time', 'language' => 'Language', 'speakers' => 'Speakers', 'participant' => 'Participant', 'audio' => 'Audio was not kept. This text was produced by speech recognition and can contain mistakes.', 'name' => 'English'],
+        'de' => ['gaps' => 'Einige Abschnitte fehlen: Die Spracherkennung war kurz nicht verfügbar.', 'present' => 'Teilnehmende', 'title' => 'Mitschrift', 'started_by' => 'Gestartet von', 'time' => 'Zeit', 'language' => 'Sprache', 'speakers' => 'Sprechende', 'participant' => 'Teilnehmende Person', 'audio' => 'Audio wurde nicht gespeichert. Dieser Text stammt aus der Spracherkennung und kann Fehler enthalten.', 'name' => 'Deutsch'],
+        'es' => ['gaps' => 'Faltan algunas partes: el reconocimiento de voz no estuvo disponible durante un momento.', 'present' => 'Participantes', 'title' => 'Notas de la reunión', 'started_by' => 'Iniciado por', 'time' => 'Hora', 'language' => 'Idioma', 'speakers' => 'Participantes que hablaron', 'participant' => 'Participante', 'audio' => 'El audio no se guardó. Este texto procede del reconocimiento de voz y puede contener errores.', 'name' => 'Español'],
+        'fr' => ['gaps' => 'Certaines parties manquent : la reconnaissance vocale a été momentanément indisponible.', 'present' => 'Participants', 'title' => 'Notes de réunion', 'started_by' => 'Lancé par', 'time' => 'Heure', 'language' => 'Langue', 'speakers' => 'Intervenants', 'participant' => 'Participant', 'audio' => "L'audio n'a pas été conservé. Ce texte provient de la reconnaissance vocale et peut contenir des erreurs.", 'name' => 'Français'],
+        'tr' => ['gaps' => 'Bazı bölümler eksik: konuşma tanıma bir süre kullanılamadı.', 'present' => 'Katılımcılar', 'title' => 'Toplantı notları', 'started_by' => 'Başlatan', 'time' => 'Saat', 'language' => 'Dil', 'speakers' => 'Konuşanlar', 'participant' => 'Katılımcı', 'audio' => 'Ses kaydedilmedi. Bu metin konuşma tanımadan gelir ve hata içerebilir.', 'name' => 'Türkçe'],
     ];
 
     /**
@@ -46,6 +46,9 @@ final class TranscriptRenderer
             sprintf('_%s_', $copy['audio']),
             '',
         ];
+        if ((int) ($session['gaps'] ?? 0) > 0) {
+            array_splice($lines, -1, 0, [sprintf('_%s_', $copy['gaps']), '']);
+        }
 
         foreach ($this->turns($segments) as $turn) {
             $lines[] = sprintf('**%s · %s:** %s', $this->clock(intdiv($turn['at'], 1000), $zone, 'H:i'), $labels[$turn['speaker']] ?? $copy['participant'], $turn['text']);

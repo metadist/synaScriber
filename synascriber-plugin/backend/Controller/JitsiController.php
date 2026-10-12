@@ -94,7 +94,7 @@ final class JitsiController extends AbstractController
         return $this->json(['session' => $this->sessions->view($session, $user)], 'failed' === $session['state'] ? 502 : 201);
     }
 
-    #[Route('/sessions/{ref}/stop', name: 'stop', methods: ['POST'], requirements: ['ref' => '[a-f0-9]{16}'])]
+    #[Route('/sessions/{ref}/stop', name: 'stop', methods: ['POST'], requirements: ['ref' => '[a-f0-9]{16}|[A-Za-z0-9_-]{22}'])]
     #[OA\Post(summary: 'Stop meeting notes; the transcript is saved within a minute')]
     #[OA\Response(response: 200, description: 'Notes are stopping')]
     public function stop(string $ref, #[CurrentUser] ?User $user): JsonResponse
