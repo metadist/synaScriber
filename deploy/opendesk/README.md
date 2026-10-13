@@ -40,7 +40,12 @@ Tick every line; the installer checks them again.
   |--------|-----------|----------|
   | `cpu` | German Whisper on your cluster's CPUs (8 threads ≈ twice real time) | trying it out: one or two speakers, captions a few seconds late |
   | `gpu` | the same server on an NVIDIA GPU node (≈ 70× real time) | real meetings |
-  | `url` | a Whisper server you already run (`whisper-server` from whisper.cpp) | when you have one |
+  | `url` | a speech-to-text server you already run, with the OpenAI transcription API (see below) | when you have one |
+
+  > With `STT=url`, start whisper.cpp's `whisper-server` with
+  > `--inference-path /v1/audio/transcriptions --convert`. Without them its
+  > health check still answers, but every transcription fails. For vLLM, start
+  > it with `--served-model-name whisper` (or set `STT_MODEL` to its name).
 
   > `cpu` and `gpu` need the image `ghcr.io/metadist/synaplan-stt`, which is
   > published with the first `stt` release. Until then `./synascriber check`
@@ -155,7 +160,9 @@ owns the plugin; its password is in the Secret `synaplan-bootstrap-admin`.
 | `KUBE_CONTEXT` | current context | kubectl context of the openDesk cluster |
 | `OPENDESK_NAMESPACE` | found automatically | openDesk's namespace |
 | `STT` | `cpu` | `cpu`, `gpu` or `url` (section 1) |
-| `STT_URL` | — | your Whisper server, for `STT=url` |
+| `STT_URL` | — | your speech-to-text server, for `STT=url` |
+| `STT_MODEL` | `whisper` | model name sent to it; whisper-server ignores it, vLLM needs its `--served-model-name` |
+| `STT_API_KEY` | — | its API key, if it wants one (`STT=url` only) |
 | `OLLAMA_URL` | — | Ollama for Synaplan's chat and search |
 | `NOTES_LANGUAGES` / `NOTES_DEFAULT_LANGUAGE` | `de,en` / `de` | languages offered in the meeting (de, en, es, fr, tr) |
 | `NOTES_FOLDER` | `Meetings` | folder in Sources › Generated |

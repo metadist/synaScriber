@@ -77,6 +77,52 @@ final class WhisperClientTest extends PluginTestCase
         self::assertSame('no_speech', $this->client($body)->recognize('OggS', 'de')['dropped']);
     }
 
+    public function testRequestNamesTheModel(): void
+    {
+        $sent = $this->captureRequest([]);
+
+        self::assertStringContainsString('name="model"'."\r\n\r\n".'whisper'."\r\n", $sent['body']);
+        self::assertNotContains('authorization', array_map(static fn (string $h): string => strtolower(strstr($h, ':', true) ?: $h), $sent['headers']));
+    }
+
+    public function testApiKeyIsSentAsBearer(): void
+    {
+        $sent = $this->captureRequest(['stt_model' => 'openai/whisper-large-v3-turbo', 'stt_api_key' => 'k-123']);
+
+        self::assertStringContainsString('name="model"'."\r\n\r\n".'openai/whisper-large-v3-turbo'."\r\n", $sent['body']);
+        self::assertContains('Authorization: Bearer k-123', $sent['headers']);
+    }
+
+    /**
+     * Sends one window and returns the request as the server saw it.
+     *
+     * @param array<string, string> $settings
+     *
+     * @return array{headers: list<string>, body: string}
+     */
+    private function captureRequest(array $settings): array
+    {
+        $sent = ['headers' => [], 'body' => ''];
+        $http = new MockHttpClient(static function (string $method, string $url, array $options) use (&$sent): MockResponse {
+            $body = $options['body'] ?? '';
+            if ($body instanceof \Closure) {
+                $chunks = '';
+                while ('' !== ($chunk = (string) $body(16384))) {
+                    $chunks .= $chunk;
+                }
+                $body = $chunks;
+            } elseif (is_iterable($body)) {
+                $body = implode('', [...$body]);
+            }
+            $sent = ['headers' => array_values($options['headers'] ?? []), 'body' => (string) $body];
+
+            return new MockResponse((string) json_encode(self::body([[0.0, 1.0, ' Hallo']])));
+        });
+        (new WhisperClient($http, $this->settings($settings), new NullLogger()))->recognize('OggS', 'de');
+
+        return $sent;
+    }
+
     public function testUnreachableServerIsReported(): void
     {
         $http = new MockHttpClient(static fn (): MockResponse => throw new TransportException('connection refused'));
