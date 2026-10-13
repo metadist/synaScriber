@@ -1,5 +1,7 @@
 # synaScriber — the openDesk bridge for meeting transcripts
 
+**Setup and how it works:** [architecture.md](architecture.md).
+
 **Sovereign meeting notes for openDesk.** synaScriber is a plugin for the
 [Synaplan](https://github.com/metadist/synaplan) AI server. It turns the
 spoken words of a Jitsi meeting into a written transcript with speaker names
@@ -99,6 +101,7 @@ at [docs/README.md](docs/README.md).
 
 | Path | What |
 |------|------|
+| [`architecture.md`](architecture.md) | Short setup and how the pieces work. The component contract is in [`docs/02_architecture.md`](docs/02_architecture.md). |
 | [`synascriber-plugin/`](synascriber-plugin/) | The Synaplan plugin (`manifest.json`, PHP backend, plugin page, Jitsi loader, migration). Mount or copy it to `/plugins/synascriber` and run `app:plugin:install`. |
 | [`prosody/mod_synascriber.lua`](prosody/mod_synascriber.lua) | Prosody module on Jitsi's main VirtualHost: lets Synaplan switch bridge transcription on and off per room; clients cannot start it. |
 | [`jitsi/static/`](jitsi/static/) | The silent sign-in page served by Jitsi web. |
