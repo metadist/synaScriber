@@ -1,9 +1,10 @@
 # synaScriber — plan and research (start here)
 
-**Status:** Plan, 2026-10-04. Research and one feasibility spike are done
-(see [`STATUS.md`](./STATUS.md)). No product code yet. Review this folder,
-tick the decisions in §4, then start with step `MN-1` in
-[`07_sprints.md`](./07_sprints.md).
+**Status:** Plan, 2026-10-04. Since then a dev MVP and the openDesk
+installer exist (see [`STATUS.md`](./STATUS.md)); what runs today, and where
+it differs from this plan, is in [`09_as_built.md`](./09_as_built.md).
+Review this folder, tick the decisions in §4, then continue with the steps
+in [`07_sprints.md`](./07_sprints.md).
 **Owner:** product owner.
 **MVP:** Jitsi on the current openDesk edition release, with a floating
 **Meeting notes** button. Element (chat and calls) follows after v1.x.
@@ -51,6 +52,7 @@ OpenCloud is v1.2.
 | 06 | [`06_dev_environment.md`](./06_dev_environment.md) | How to develop against an openDesk dev cluster without touching the openDesk edition repo. |
 | 07 | [`07_sprints.md`](./07_sprints.md) | The steps `MN-0` … `MN-12`, each with files, tests and an exit. |
 | 08 | [`08_stt_service.md`](./08_stt_service.md) | The German Whisper server for Kubernetes with GPU nodes: image, `stt` chart, helmfile release, which versions must move, measured sizing, release order. |
+| 09 | [`09_as_built.md`](./09_as_built.md) | What runs today: pods, images, the JavaScript, what is stored where, the flow of one meeting, and where the code differs from 02. |
 | — | [`STATUS.md`](./STATUS.md) | Step log. The spike entry of 2026-10-04 is the first row. |
 
 Private cluster specifics (IP addresses, hostnames, ports, firewall rules,
