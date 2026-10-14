@@ -20,7 +20,7 @@ code differs from it.
 | [`STATUS.md`](./STATUS.md) | Current up to 2026-10-12, plus the entry of 2026-10-14. |
 | [`02_architecture.md`](./02_architecture.md), [`00_master_plan.md`](./00_master_plan.md) §4–§6 | The plan. Many interfaces differ from the code (§6). |
 | [`03_plugin.md`](./03_plugin.md) | The plan. Repository layout, classes, routes and settings differ. |
-| [`04_jitsi_and_opendesk.md`](./04_jitsi_and_opendesk.md) | Partly: the Keycloak client and the dialog match; the loader include, the Prosody API, the Jicofo variable names and the chat lines do not. |
+| [`04_jitsi_and_opendesk.md`](./04_jitsi_and_opendesk.md) | Partly: the Keycloak client matches; the dialog (the folder is a text field, not a list), the loader include, the Prosody API, the Jicofo variable names and the chat lines differ. |
 | [`06_dev_environment.md`](./06_dev_environment.md) | Superseded by the installer for openDesk. |
 | [`08_stt_service.md`](./08_stt_service.md) | Status line updated on 2026-10-14; §2 still lists files that moved to `metadist/synaplan-stt`. |
 | [`synascriber-plugin/manifest.json`](../synascriber-plugin/manifest.json) `routes` | Still names `…/transcriber/sessions/{ref}/finish`; misses `public/`, `preview` and `events`. |
