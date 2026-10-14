@@ -1,10 +1,19 @@
 # 08 — Speech-to-text service on Kubernetes (`synaplan-charts`)
 
-**Status:** 2026-10-05. Image, chart and helmfile release are in draft PR
+**Status:** 2026-10-14.
 [synaplan-charts#51](https://github.com/metadist/synaplan-charts/pull/51)
-(branch `feat/stt-whisper-server`): rendered, validated, chart CI green; the
-image was built and benchmarked on our GPU host. Not merged, not published,
-not yet installed on a GPU cluster. Step `MN-8a2` in
+merged on 2026-10-13. The image moved to its own repository,
+[metadist/synaplan-stt](https://github.com/metadist/synaplan-stt) (tag
+`v0.1.0`), and is published as `ghcr.io/metadist/synaplan-stt:0.1.0-cpu`
+and `0.1.0-cuda`; `images/stt/` and the STT Image workflow below are no
+longer in synaplan-charts. The `stt` chart is on synaplan-charts `main` with
+`server.vad.enabled: true`; as an OCI chart only `0.0.0-dev.*` exists.
+`deployments/synaplan-with-triton` is now `deployments/synaplan-standalone`
+([#64](https://github.com/metadist/synaplan-charts/pull/64)). Synaplan
+`main` still has no server mode (`MN-8a`): `speech.whisperServerUrl` has no
+effect, and meeting notes reach the server through the plugin's own
+`stt_url` ([09](./09_as_built.md) §7). Not yet installed on a GPU cluster.
+Step `MN-8a2` in
 [07](./07_sprints.md#mn-8--engine-and-quality-beside-mn-3mn-7-gates-mn-9).
 
 **Goal:** every target that installs openDesk + Synaplan + the meeting

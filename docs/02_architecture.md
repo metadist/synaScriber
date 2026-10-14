@@ -1,5 +1,9 @@
 # 02 — Architecture
 
+**Status:** Plan of 2026-10-04. The code differs in several interfaces
+(Prosody API, transcriber auth, speech-to-text path, data model); what runs
+today is in [09](./09_as_built.md), §6 lists the differences.
+
 Read [00](./00_master_plan.md) §4 first. This file is the contract between
 the four moving parts: **loader** (in the Jitsi page), **plugin** (in
 Synaplan), **Prosody module**, **transcriber**.
