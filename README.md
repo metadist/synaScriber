@@ -61,21 +61,22 @@ Jitsi web loader   ◀─ button, dialog, banner (Keycloak) ─▶  Synaplan + s
   recording service is needed.
 - **Who decides:** Synaplan. A Prosody module turns transcription on per room
   only when Synaplan says so; clients cannot start it on their own.
-- **Identity:** openDesk's Keycloak; the transcript belongs to the person who
-  started it.
-- **Speech-to-text:** Synaplan's own Whisper, served by `whisper-server` on a
-  GPU — the German fine-tune of Whisper large-v3-turbo by default
-  (5.3 % word error rate on German read speech, about 70× faster than real
-  time on one GPU). Packaged as the `stt` chart in
-  [synaplan-charts](https://github.com/metadist/synaplan-charts).
+- **Identity:** openDesk's Keycloak; every signed-in participant gets their
+  own copy of the transcript.
+- **Speech-to-text:** a whisper.cpp `whisper-server` with the German
+  fine-tune of Whisper large-v3-turbo (5.3 % word error rate on German read
+  speech, about 70× faster than real time on one GPU), image
+  [synaplan-stt](https://github.com/metadist/synaplan-stt), deployed with the
+  `stt` chart of [synaplan-charts](https://github.com/metadist/synaplan-charts).
+
+Packages, requirements and the ToDo: [docs/02_architecture.md](docs/02_architecture.md).
 
 ## Sovereign by design
 
 - Runs entirely inside your openDesk / Kubernetes installation.
 - No cloud speech service unless an administrator explicitly allows one.
 - Audio is processed in memory and discarded; only text is stored.
-- Transparent for everyone in the meeting: banner, Jitsi's own indicator,
-  one chat line on start and stop.
+- Transparent for everyone in the meeting: banner and Jitsi's own indicator.
 - Open source under Apache 2.0, built on open models and open components.
 
 ## Status and roadmap
@@ -95,6 +96,10 @@ both people) — see [docs/STATUS.md](docs/STATUS.md). The remaining steps to
 v1.0 are in [docs/07_sprints.md](docs/07_sprints.md). Start reading the plan
 at [docs/README.md](docs/README.md).
 
+**Known issue:** a fresh `install` currently stops at the Helm step, because
+the pinned synaplan-charts commit is gone (fix and workaround:
+[docs/02_architecture.md](docs/02_architecture.md#7-todo)).
+
 ## What is in this repository
 
 | Path | What |
@@ -105,7 +110,7 @@ at [docs/README.md](docs/README.md).
 | [`deploy/opendesk/`](deploy/opendesk/) | **The installer for openDesk**: `./synascriber check / install / verify / uninstall`, the `synascriber` Helm chart, the settings file, the guide. |
 | [`deploy/keycloak/ensure-client.py`](deploy/keycloak/ensure-client.py) | Creates the Keycloak public client the loader signs in with (standalone; the installer does this itself). |
 | [`tests/e2e/meeting-notes.mjs`](tests/e2e/meeting-notes.mjs) | Playwright journey against a real openDesk: two people, speech audio, start, banner, stop, saved file. |
-| [`docs/`](docs/) | Plan, research, architecture, steps, status. |
+| [`docs/`](docs/) | The current architecture ([`02`](docs/02_architecture.md)), plan, research, steps, status. |
 
 The transcriber that receives the audio from Jitsi's bridge is the
 `synaplan-transcriber` sidecar in the [Synaplan repository](https://github.com/metadist/synaplan)
@@ -116,6 +121,7 @@ The transcriber that receives the audio from Jitsi's bridge is the
 | Repository | Role |
 |------------|------|
 | [metadist/synaplan](https://github.com/metadist/synaplan) | The Synaplan server (core): plugin host, files, speech-to-text, the transcriber sidecar. |
+| [metadist/synaplan-stt](https://github.com/metadist/synaplan-stt) | The speech-to-text image: whisper.cpp `whisper-server` with the German Whisper model, as `cpu` and `cuda`. |
 | [metadist/synaplan-charts](https://github.com/metadist/synaplan-charts) | Helm charts: `synaplan`, `stt` for the Whisper speech server, and `deployments/opendesk-addon`, which adds Synaplan to an existing openDesk (the installer uses it). |
 | **metadist/synaScriber** (this repo) | The plugin, the Jitsi loader, the Prosody module, openDesk configuration snippets, the plan. |
 

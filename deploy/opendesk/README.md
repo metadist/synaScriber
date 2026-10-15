@@ -42,9 +42,9 @@ Tick every line; the installer checks them again.
   | `gpu` | the same server on an NVIDIA GPU node (≈ 70× real time) | real meetings |
   | `url` | a Whisper server you already run (`whisper-server` from whisper.cpp) | when you have one |
 
-  > `cpu` and `gpu` need the image `ghcr.io/metadist/synaplan-stt`, which is
-  > published with the first `stt` release. Until then `./synascriber check`
-  > says so, and `STT=url` is the way to go.
+  > `cpu` and `gpu` use the image `ghcr.io/metadist/synaplan-stt` (0.1.0,
+  > published 2026-10-13); this path is not yet walked end to end.
+  > `STT=url` is the tested one.
 
 - [ ] **Optional**: an [Ollama](https://ollama.com) server for Synaplan's chat
       ("What did we decide yesterday?"). Without it, notes are still written
@@ -56,6 +56,10 @@ scheduler, Redis and the transcriber under 40 MB each) and two volumes
 (10 GB uploads, 5 GB database). With `STT=cpu` another 4–8 CPUs and 2–4 GB.
 
 ## 2. Install
+
+> **Known issue (2026-10-14):** `install` stops at the Helm step because the
+> pinned synaplan-charts commit is gone. Workaround:
+> [docs/02 §7](../../docs/02_architecture.md#7-todo).
 
 ```bash
 git clone https://github.com/metadist/synaScriber.git
