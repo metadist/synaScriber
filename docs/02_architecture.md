@@ -1,313 +1,158 @@
 # 02 — Architecture
 
-Read [00](./00_master_plan.md) §4 first. This file is the contract between
-the four moving parts: **loader** (in the Jitsi page), **plugin** (in
-Synaplan), **Prosody module**, **transcriber**.
+**Status:** current, 2026-10-15. Checked against the code of this repository,
+[synaplan](https://github.com/metadist/synaplan),
+[synaplan-stt](https://github.com/metadist/synaplan-stt) and
+[synaplan-charts](https://github.com/metadist/synaplan-charts). It replaces
+the plan of 2026-10-04
+([02 at `6babe67`](https://github.com/metadist/synaScriber/blob/6babe67590475885bdb6a1e387c83e02ba9ff4a6/docs/02_architecture.md)),
+which 00, 03, 04, 06 and 07 still describe. Where they differ, this file is
+right.
 
 ---
 
-## 1. Trust boundaries
+## 1. Overview
 
-```text
- Browser (untrusted)        Synaplan (trusted)        openDesk Jitsi (trusted, other team)
- ─────────────────────      ──────────────────        ─────────────────────────────────────
- loader  ── bearer ──────▶  plugin  ── HMAC ───────▶  Prosody (mod_synascriber)
-                            plugin  ◀── HMAC ───────  Prosody (roster, stopped, room ended)
-                            plugin  ◀── token ──────  transcriber  ◀── WebSocket ── bridge
-                                                       (same cluster network)       (Jicofo header)
+Meeting notes is a Synaplan plugin. Jitsi's bridge streams each speaker's
+audio to a small transcriber service. The transcriber sends short audio
+windows to the plugin; the plugin gets the text from a Whisper server and
+returns it as live captions. When the meeting stops, the plugin saves one
+Markdown transcript per signed-in participant in Synaplan. Audio is never
+stored.
+
+```mermaid
+flowchart LR
+  subgraph BR["Browser"]
+    APP["Jitsi Meet"]
+    LOADER["loader.js<br/>button, dialog, captions"]
+    SPA["Synaplan web app"]
+  end
+
+  subgraph JI["Jitsi"]
+    WEB["web<br/>+ loader script, silent page"]
+    PROSODY["prosody<br/>+ mod_synascriber"]
+    JICOFO["jicofo<br/>+ transcriber URL"]
+    JVB["jvb"]
+  end
+
+  KC["Keycloak"]
+
+  subgraph K8S["Kubernetes"]
+    SYN["synaplan<br/>+ plugin synascriber"]
+    TR["synascriber-transcriber"]
+    STT["synaplan-stt<br/>Whisper server"]
+    DB[("MariaDB + uploads volume")]
+  end
+
+  APP -->|page| WEB
+  APP <-->|audio, captions| JVB
+  LOADER -->|sign-in| KC
+  LOADER -->|state, start, stop| SYN
+  SPA -->|transcripts| SYN
+  SYN -->|start, stop, state| PROSODY
+  PROSODY -->|room metadata| JICOFO
+  JVB <-->|transcription on| JICOFO
+  JVB <-->|audio per speaker, captions| TR
+  SYN <-->|audio windows, text| TR
+  SYN -->|audio window| STT
+  SYN -->|sessions, files| DB
 ```
 
-- The browser never talks to Prosody's control API, never sees a secret,
-  and never sends audio. It only asks Synaplan to start or stop.
-- Prosody's control API and the transcriber are **cluster-internal**
-  (ClusterIP). Nothing in them is exposed through an ingress.
-- Synaplan's public plugin endpoints (`/public/…`) authenticate every call
-  themselves (HMAC or bearer token, constant-time compare).
+Arrows point from the caller to the one called.
 
-## 2. Session state machine
+## 2. Repositories and packages
 
-One **meeting session** per Jitsi conference instance (meeting id) at a time.
+| Repository | Package | Runs in |
+|------------|---------|---------|
+| [synaScriber](https://github.com/metadist/synaScriber) (this one) | `synascriber-plugin/` 0.3.0: PHP backend, Jitsi loader `frontend/jitsi/loader.js`, plugin page `frontend/index.js` | the Synaplan pods, mounted at `/plugins/synascriber`; the loader runs in each participant's browser |
+| | `prosody/mod_synascriber.lua` 0.3.0 | Jitsi's Prosody |
+| | `jitsi/static/synascriber-silent.html` | Jitsi web |
+| | `deploy/opendesk/chart`: Helm chart `synascriber` (transcriber, ConfigMaps, Secrets) | Kubernetes |
+| | `deploy/opendesk/synascriber`: the installer for openDesk | the operator's machine |
+| [synaplan](https://github.com/metadist/synaplan) | image `ghcr.io/metadist/synaplan` (installer pins 5.3.2; latest 5.4.1) | pods `synaplan`, `synaplan-worker`, `synaplan-scheduler` |
+| | `sidecars/synaplan-transcriber` (Node 22; no published image) | pod `synascriber-transcriber`, built from source at `09d72d3` on pod start |
+| [synaplan-stt](https://github.com/metadist/synaplan-stt) | image `ghcr.io/metadist/synaplan-stt:0.1.0-cpu` or `-cuda`: whisper.cpp, German Whisper large-v3-turbo, Silero VAD | pod `synaplan-stt` |
+| [synaplan-charts](https://github.com/metadist/synaplan-charts) | charts `synaplan` 0.6.0 and `stt` 0.1.0; `deployments/opendesk-addon` with MariaDB 11.8 (pinned `a14fa65`, see §7) | Helm releases `synaplan-resources`, `synaplan`, `synaplan-stt` |
+| Jitsi ([docker-jitsi-meet](https://github.com/jitsi/docker-jitsi-meet) images) | `jitsi/web`, `prosody`, `jicofo`, `jvb`; tested with `stable-11248` | your Jitsi deployment |
 
-```text
-            start ok                bridge connected        stop / session-end
- (none) ──────────────▶ starting ───────────────────▶ running ───────────────▶ stopping
-   ▲                      │  │                           │  ▲                      │
-   │       30 s no bridge │  │ Prosody refused            │  │ speech ok again      │ finalize
-   │                      ▼  ▼                           ▼  │                      ▼
-   │                    failed                         paused (speech down)    saved | saved_with_gaps
-   │                                                                            | nothing_to_save | failed
-   └──────────── a new session may start after a terminal state ──────────────────┘
-```
+## 3. What you need to run it
 
-| State | Meaning | Entered when | Left when |
-|-------|---------|--------------|-----------|
-| `starting` | Prosody accepted; waiting for the bridge. | `POST …/jitsi/sessions` and Prosody `start` returned 200. | Transcriber `connected` event ⇒ `running`; 30 s timeout ⇒ `failed` (plugin calls Prosody `stop`). |
-| `running` | Audio windows arrive. | `connected`. | Stop paths ⇒ `stopping`; speech failures ⇒ `paused`. |
-| `paused` | Audio arrives, speech-to-text fails; windows are counted as a gap. | 3 consecutive failed windows or engine reported down. | A window succeeds ⇒ `running`. |
-| `stopping` | Flushing the last windows. | Owner Stop, Prosody `transcription-stopped` / `room-destroyed`, transcriber `session-end`, admin Stop all, plugin off. | Transcriber `finished` event, or 60 s after entering ⇒ finalize. |
-| `saved` | File written, no gaps. | Finalize with ≥ 1 segment, 0 gaps. | terminal |
-| `saved_with_gaps` | File written, gaps marked with times. | Finalize with gaps. | terminal |
-| `nothing_to_save` | No speech recognised. | Finalize with 0 segments. | terminal |
-| `failed` | Could not start, or the file could not be written. | see above | terminal |
+| Piece | Requirement |
+|-------|-------------|
+| Kubernetes | One namespace for Synaplan and the transcriber. The installer needs `kubectl`, Helm 3 and helmfile. |
+| Keycloak | Client `synaplan` (Synaplan sign-in) and public client `synascriber` (PKCE, the loader); both put `synaplan` in the token audience. |
+| Jitsi | `stable-11031` or newer (bridge transcription), with token sign-in from the same Keycloak so Prosody knows each participant's `sub` and e-mail. Three additions: the loader script in `head.html` and the silent page in web; `mod_synascriber` with `SYNASCRIBER_SECRET` in Prosody; `transcription.url-template` with the bearer token in Jicofo. |
+| Synaplan | 5.3.2 with MariaDB 11.7 or newer (VECTOR) and Redis, at `https://synaplan.<domain>`. The plugin is mounted in all Synaplan pods and installed for one administrator, the owner. The owner holds the transcriber's API key; the settings hold the Prosody URL and secret and the Whisper URL. |
+| Speech-to-text | `synaplan-stt` on CPU (about 2× real time) or on a GPU (about 70×), or any whisper.cpp `whisper-server`. |
+| Optional | Ollama for embeddings. Without it, transcripts are saved but chat cannot search them. |
+| Network | Synaplan reaches Prosody on :5280 and Whisper on :8080; the bridge reaches the transcriber on :8095; the transcriber reaches Synaplan. At start, the transcriber pod downloads its source from `codeload.github.com` and `registry.npmjs.org`. |
 
-**Watchdog** (plugin periodic task, every 60 s): `starting` older than 30 s ⇒
-`failed`; `running`/`paused` without a window for 10 min **and** Prosody says
-the room is gone or not transcribing ⇒ `stopping`; `stopping` older than 60 s
-⇒ finalize. No session can stay non-terminal for more than ~11 minutes after
-its meeting ended (Perfect-UX bar point 6).
+On openDesk, `deploy/opendesk/synascriber install` sets up all of this; see
+its [README](../deploy/opendesk/README.md).
 
-## 3. Start and stop authority
+## 4. How a meeting works
 
-| Action | Who | Path | Synaplan needed? |
-|--------|-----|------|------------------|
-| Start | Signed-in openDesk user who is **in the room** (v1.0); plus policy (v1.1) | Loader → plugin → Prosody `start` | yes |
-| Stop (owner) | The person who started | Loader banner **Stop** → plugin → Prosody `stop` | yes |
-| Stop (moderator) | Any Jitsi moderator | Jitsi's own "stop transcription" control → metadata `isTranscribingEnabled=false` → Prosody allows it → bridge `session-end` → transcriber → plugin | **no** for stopping; yes for saving (watchdog saves later) |
-| Stop (everyone left) | — | Bridge `session-end`, Prosody `room-destroyed` | no for stopping |
-| Stop all | Synaplan admin | Admin page → plugin → Prosody `stop` per running session | yes |
-| Turn off | Synaplan admin | Plugin `enabled=0` ⇒ Stop all + loader config says off | yes |
+1. **Join.** Jitsi's `head.html` loads `loader.js` from Synaplan. The loader
+   signs in to Keycloak in a hidden iframe (PKCE, `prompt=none`) and asks
+   Synaplan every 15 s whether notes are on.
+2. **Start.** The plugin stores a session with a random reference and calls
+   Prosody. Prosody sets the room metadata; Jicofo tells the bridge to open
+   a WebSocket to the transcriber with `notes=<reference>`.
+3. **Speak.** The bridge sends each speaker's audio. The transcriber sends a
+   preview every 1.5 s and a final window at a pause (0.7 s) or after 8 s.
+   The plugin gets the text from the Whisper server and keeps the final
+   text. The captions go back through the bridge to everyone.
+4. **Stop.** The loader's Stop, a moderator's stop in Jitsi, or the last
+   person leaving switches transcription off. The transcriber sends its last
+   windows and `finished`. The plugin writes one Markdown file per signed-in
+   participant into Synaplan › Sources › Generated.
 
-Clients can **not** start transcription by setting `recording.isTranscribingEnabled=true`
-themselves: `mod_synascriber` denies that update unless the room has an
-active Synaplan reference set by the control API ([04 §4](./04_jitsi_and_opendesk.md#4-prosody-module-mod_synascriber)).
-Clients **can** set it to `false` (moderators only, Jitsi's default rule) so a
-stop never depends on Synaplan.
+## 5. Interfaces
 
-## 4. Data model (plugin, no schema change)
+| From → to | Call | Authentication |
+|-----------|------|----------------|
+| Browser → Synaplan | `GET /api/v1/user/<owner>/plugins/synascriber/assets/jitsi/loader.js` | none (public asset) |
+| Loader → Keycloak | authorization code with PKCE, `prompt=none` | — |
+| Loader → plugin | `GET …/jitsi/state?room=`, `POST …/jitsi/sessions`, `POST …/jitsi/sessions/{ref}/stop` | Keycloak bearer token |
+| Plugin → Prosody | `GET /synascriber/health`, `GET /synascriber/state`, `POST /synascriber/start`, `POST /synascriber/stop` on :5280 | static bearer secret |
+| Bridge → transcriber | WebSocket `:8095/transcribe?sessionId=…&notes=<ref>` | bearer transcriber token |
+| Transcriber → plugin | `…/public/transcriber/sessions/{ref}` and `/audio`, `/preview`, `/events` | Synaplan API key of the owner |
+| Plugin → Whisper | `POST /v1/audio/transcriptions` on :8080 | none; NetworkPolicy |
+| Plugin page → plugin | `GET …/me/sessions`, `GET …/admin/status`, `PUT …/admin/settings` | Synaplan session |
 
-All rows use `plugin_data` (`plugin_name = 'synascriber'`) and `BCONFIG`.
+`…` is `/api/v1/plugins/synascriber`.
 
-| What | `user_id` | `data_type` | `data_key` | `data` (JSON) |
-|------|-----------|-------------|------------|---------------|
-| Session | owner | `session` | `ms_<16 hex>` | `{id, ref_hash, state, room, meeting_id, jitsi_host, language, folder_group_key, folder_label, profile, captions, started_at, connected_at, stopped_at, stop_reason, finished_at, file_id, gaps:[{from_ms,to_ms,reason}], segment_count, speakers:{endpointId:{name, user_sub?, guest}}, error}` |
-| Reference index | `0` | `session_ref` | `sha256(ref)` | `{owner_id, session_id, meeting_id, created_at}` |
-| Segment | owner | `segment` | `ms_<id>:<6-digit seq>` | `{seq, endpoint_id, speaker, t0_ms, t1_ms, text, language, confidence?, flags:[]}` |
-| Room lock | `0` | `room_lock` | `sha256(jitsi_host + room)` | `{session_id, owner_id, meeting_id, since}` (one active session per room) |
-| Audit | core `BAUDITLOG` via the existing audit service, events `synascriber.started / stopped / saved / failed / settings_changed / connection_rotated` (metadata only, no text). | | | |
+## 6. What is stored where
 
-Settings: `BCONFIG` owner `0`, group `P_synascriber` ([03 §5](./03_plugin.md#5-settings-bconfig-owner-0-group-p_synascriber)).
-Secrets in the same group, encrypted with core `EncryptionService`.
+| What | Where | How long |
+|------|-------|----------|
+| Audio | transcriber memory (at most 8 s per speaker) and one PHP temp file per request | seconds |
+| Captions | messages through the bridge | not stored |
+| Session, attendees (Keycloak `sub`, e-mail), text per window | MariaDB `plugin_data`, under the plugin owner | session kept; window text deleted after saving |
+| Transcript, one copy per signed-in participant | Markdown file on the uploads volume, row in `BFILES`, vectors in `BRAG` (with Ollama) | until the person deletes it |
+| Settings | `BCONFIG`, group `P_synascriber`; the Prosody secret in plain text | until changed |
+| Secrets | Kubernetes Secret `synascriber` (`prosody-secret`, `transcriber-token`, `api-key`) | until uninstall |
+| Browser | access token in memory; `localStorage` `synascriber.captions` | tab / permanent |
 
-`ref` is 128 random bits, base64url (22 chars). Only its SHA-256 is stored;
-the plain value lives in Prosody's room metadata (`transcription.urlParams`)
-for the duration of the meeting and in the bridge URL. Room metadata is
-broadcast to clients, so `ref` alone grants nothing: the transcriber
-endpoints also require the transcriber token, which only the transcriber
-holds. The loader never uses `ref`.
+## 7. ToDo
 
-Segment volume: ~1 segment per speaker per 5–12 s ⇒ a 60-minute meeting with
-4 active speakers ≈ 1,200 rows. Listing uses a prefix query on the unique
-index (`user_id, plugin_name, data_type, data_key`) through a plugin
-repository class. A dedicated table is a v1.1 option if volumes grow.
-
-## 5. APIs
-
-### 5.1 Loader → plugin (Keycloak bearer, CORS `*`, no cookies)
-
-All under `/api/v1/plugins/synascriber/`. Behind the normal `^/api`
-authentication (bearer), except `public/…`.
-
-| Method & path | Purpose | Request | Responses |
-|---------------|---------|---------|-----------|
-| `GET public/jitsi/loader.js` | The loader bundle (ES module). Public, `Cache-Control: public, max-age=300`, `Content-Type: text/javascript`. Served whenever the plugin is installed; on/off is decided by `config`, so a cached loader still exits when the plugin is off. | — | 200 JS |
-| `GET public/jitsi/config` | Is the button on, and how to sign in. Public, `max-age=60`. | `?host=meet.<domain>` | `{enabled:true, version, keycloak:{issuer, clientId}, api:"https://synaplan.<domain>/api/v1/plugins/synascriber", languages:["de","en",…], defaultLanguage:"de", captions:true}` or `{enabled:false}` |
-| `GET jitsi/me` | Can this person start here; folders; defaults. | `?room=&meetingId=` | `{canStart:true, reason:null, displayName, folders:[{key,label}], defaultFolder:{key,label}, languages, defaultLanguage, running:null|{sessionId, startedBy, since, mine:bool}}`; `canStart:false` with `reason` in `guest | e2ee | breakout | not_allowed | running_elsewhere` |
-| `POST jitsi/sessions` | Start. | `{room, meetingId, jitsiHost, language, folder:{key}|{newLabel}, e2ee:false, breakout:false}` | 201 `{sessionId, state:"starting"}`; 409 `{error:"already_running", startedBy, since}`; 403 `{error:"not_allowed", message}`; 422 `{error:"not_in_room"|"meeting_changed", message}`; 503 `{error:"jitsi_unreachable"|"transcriber_unreachable"|"speech_unavailable", message}` |
-| `GET jitsi/sessions/{id}` | Poll own session (every 2 s while starting/stopping, 10 s while running). | — | `{sessionId, state, startedAt, segments, gaps, file:{id, name, folderLabel, url}|null, message}` |
-| `POST jitsi/sessions/{id}/stop` | Stop own session. | — | 202 `{state:"stopping"}`; 404; 409 already terminal |
-
-`message` fields are the one-sentence copy in the user's language (from the
-`Accept-Language` header, fallback `en`), so the loader never composes error
-text itself.
-
-### 5.2 Synaplan app pages → plugin (cookie session, user-scoped)
-
-Under `/api/v1/user/{userId}/plugins/synascriber/` (house pattern; checks
-`#[CurrentUser]` = `{userId}`).
-
-| Method & path | Who | Purpose |
-|---------------|-----|---------|
-| `GET sessions` | owner | Own sessions, newest first, with state, file link, message. |
-| `GET sessions/{id}` | owner | One session + segment count + speakers. |
-| `POST sessions/{id}/stop` | owner | Same as 5.1 stop. |
-| `DELETE sessions/{id}` | owner | Removes the session record and segments. The file in Files stays (consequence copy says so). |
-| `GET admin/status` | admin | The four status lines ([03 §6](./03_plugin.md#6-admin-page)). |
-| `GET admin/settings` · `PUT admin/settings` | admin | Settings. |
-| `POST admin/connection` | admin | Create or rotate the Prosody secret and the transcriber token; returns the snippets **once** with the plain secrets. |
-| `GET admin/sessions` | admin | Metadata only (who, room, when, state, duration). No text, no file links of others. |
-| `POST admin/stop-all` | admin | Stop every running session. |
-
-### 5.3 Plugin → Prosody (HMAC, cluster-internal)
-
-Base URL from settings, e.g. `http://jitsi-prosody:5280/synaplan-notes/v1`.
-
-| Method & path | Body | Answer |
-|---------------|------|--------|
-| `GET health` | — | `{ok:true, module:"synascriber", version:"1.0.0", muc:"muc.meet.jitsi"}` |
-| `POST start` | `{room, meetingId, ref, language, captions, startedBy:{userSub, name}, chatLine}` | 200 `{meetingId, occupants:[…]}`; 404 `room_not_found`; 409 `meeting_changed` (live meeting id differs) or `already_transcribing`; 403 `starter_not_in_room`; 422 `e2ee` |
-| `POST stop` | `{room, ref, reason, chatLine}` | 200 `{stopped:true}`; unknown ref ⇒ 200 `{stopped:false}` (idempotent) |
-| `POST state` | `{room, ref, state:"starting"|"on"|"paused"}` | 200; keeps `metadata.synaplanNotes.state` (the banner) in step with the session |
-| `GET rooms/{room}` | — | `{exists, meetingId, transcribing, synaplanRefHash, occupants:[…]}` (watchdog) |
-
-Occupant: `{endpointId, name, userSub|null, email|null, role:"moderator"|"participant", guest:bool}`.
-
-### 5.4 Prosody → plugin (HMAC)
-
-`POST /api/v1/plugins/synascriber/public/prosody/events`
-
-```json
-{ "type": "roster", "room": "standup", "meetingId": "997aef8e-…", "refHash": "…",
-  "occupants": [{ "endpointId": "25236799", "name": "Demo One", "userSub": "585f7db3-…", "guest": false, "role": "moderator" }] }
-```
-
-`type` ∈ `roster` (on start, join, leave, display-name change; debounced 2 s),
-`transcription-stopped` (`{by:"moderator"|"synaplan", name}`),
-`room-destroyed`. Answer 204. Unknown `refHash` ⇒ 404 (Prosody logs and
-gives up; no retries beyond 3 × backoff).
-
-### 5.5 Transcriber → plugin (bearer token, cluster-internal source)
-
-| Method & path | Purpose | Request | Response |
-|---------------|---------|---------|----------|
-| `GET public/transcriber/sessions/{ref}` | Bind a bridge connection to a session. Called once on connect and every 30 s. | header `Authorization: Bearer <transcriber token>`, `?meetingId=` | 200 `{sessionId, state, language, profile:"balanced"|"fast"|"accurate", captions, glossary:[…], speakers:{endpointId:{name}}, excluded:[endpointId], maxConcurrency}`; 404 unknown ref; 409 meeting id mismatch or terminal ⇒ transcriber closes the socket (bridge reconnects are ignored) |
-| `POST public/transcriber/sessions/{ref}/audio` | One speech window. **The only way audio enters Synaplan.** | `multipart/form-data`: `audio` (Ogg/Opus, ≤ 2 MB, ≤ 30 s), `endpointId`, `seq`, `t0Ms`, `t1Ms` (relative to session start), `cut` (`pause`/`soft`/`hard`/`stop`), `prompt` (≤ 500 chars), `Idempotency-Key` header `<ref-hash8>:<endpointId>:<seq>` | 200 `{seq, text, language, speaker, dropped:null|"no_speech"|"hallucination"|"excluded"|"duplicate", segmentSeq}`; 409 session not accepting (stopping/terminal); 429/503 with `Retry-After` (speech busy or down; the plugin also records the gap) |
-| `POST public/transcriber/sessions/{ref}/preview` | Live caption of the window so far. **Never stored.** Only while the session is running and live captions are on. | `multipart/form-data`: `audio`, `endpointId`, `seq` (the number the final window will get), `t0Ms`, `t1Ms` | 200 `{seq, text, language, dropped:null|"no_speech"|"hallucination", speechEndMs:int|null}` (where the last speech ends, ms from the window start); 403 live captions off; 409 not running ⇒ no caption this time, the session goes on |
-| `POST public/transcriber/sessions/{ref}/events` | Lifecycle. | `{type:"connected"|"speaker-start"|"speaker-stop"|"stt-failure"|"session-end"|"finished", endpointId?, at, detail?}` | 204 |
-
-The plugin transcribes with `AiFacade::transcribe()` **as the session owner**
-(usage metering and rate limits on the owner, model from plugin settings or
-the owner's SOUND2TEXT default), writes the segment, then answers. The temp
-audio file is deleted in a `finally`. No audio is logged.
-
-### 5.6 Transcriber ↔ bridge (Jitsi protocol, verified)
-
-Inbound: `start`, `media`, `ping`, `stop`, `session-end` (see
-[01 §3](./01_findings.md#3-spike-2026-10-04-bridge-transcription-on-the-dev-cluster)).
-Outbound: `pong`, and when captions are on:
-
-```json
-{ "type": "transcription-result", "event": "transcription-result",
-  "message_id": "<sessionId>:<endpointId>:<seq>", "is_interim": false,
-  "participant": { "id": "25236799", "name": "Demo One" },
-  "transcript": [{ "text": "Wir fangen mit dem Status an.", "confidence": 0.92 }],
-  "language": "de", "timestamp": 1791121908264 }
-```
-
-`participant.id` is the **endpoint id** (not the tag), `name` comes from the
-roster. `language` is the session language (two-letter); see
-[04 §6](./04_jitsi_and_opendesk.md#6-jitsi-configjs) for the matching client setting.
-
-**Live captions while someone speaks.** While a speaker talks, the
-transcriber sends the window so far to `…/preview` every 1.5 s (every 3 s
-after a preview without speech; one preview in flight per speaker). A
-preview with text goes into the meeting as `is_interim: true` with the
-`message_id` the final window will carry, so the caption line grows and is
-then replaced by the final text. The preview also decides the window
-boundaries:
-
-| Preview answer | Transcriber does |
-|----------------|------------------|
-| text, and `duration − speechEndMs ≥ 700 ms` | ends the window at the previewed packets (`cut: "pause"`); newer packets start the next window |
-| no speech, window ≥ 4 s | drops those packets; a listening participant never reaches the 8 s hard cut, so silence costs no window |
-| answer arrives after its window was sent | ignored (no stale interim after the final) |
-
-`PREVIEW_EVERY_MS=0` turns previews off (per-window captions and 8 s cuts
-only); they are also off while the plugin's live captions are off. Silent
-windows that still reach speech recognition return no text because the
-speech server runs Silero VAD.
-
-## 6. Identity in the Jitsi page
-
-| Option | Verdict |
-|--------|---------|
-| Synaplan session cookie | **No.** `SameSite=Strict` cookie is not usable with `allow_origin:*` CORS (no credentials); changing CORS globally is a security regression. |
-| Synaplan page in an iframe | **No** for v1. `X-Frame-Options: SAMEORIGIN` on every page; would need a Caddy change and frame-ancestor config; login inside iframes is fragile. |
-| Trust the Jitsi token (HS256) | **No.** Synaplan would need the Jitsi app secret, which can mint tokens for any room. Too much power for a notes feature. |
-| **Keycloak public client** `synascriber` | **Yes.** Authorization code + PKCE with `prompt=none` in a hidden iframe; the redirect lands on a small static page **on the Jitsi origin**. |
-
-**Chosen flow (D3):**
-
-1. Keycloak client `synascriber`: public, standard flow only,
-   PKCE `S256` required, redirect URI
-   `https://meet.<domain>/static/synascriber-silent.html`, web origin
-   `https://meet.<domain>`. Mappers: audience `synaplan`, `sub` (Nubus realms
-   have no `basic` scope), `email`, `full name`. Default scopes
-   `profile email`. Token lifetime is the realm default (minutes).
-2. `synascriber-silent.html` (≈ 20 lines, shipped in the plugin repo under
-   `jitsi/static/`, mounted next to openDesk's own `body.html`) reads `code`,
-   `state` or `error` from its URL and calls
-   `window.parent.postMessage({...}, location.origin)`. Same origin as the
-   loader, so no cross-origin messaging is involved.
-3. The loader opens a hidden iframe to Keycloak's `auth` endpoint with
-   `prompt=none`, waits ≤ 5 s for the message, then exchanges the code at the
-   token endpoint (CORS allowed through the web origin). The access token is
-   kept in memory only and renewed the same way before it expires.
-4. If Keycloak answers `login_required` (rare: the person is already signed
-   in to Jitsi through Keycloak), the dialog shows **Sign in to continue**,
-   which runs the same request in a popup started from that click.
-5. Calls to `/api/v1/plugins/synascriber/jitsi/*` carry
-   `Authorization: Bearer <token>`. Synaplan's `OidcBearerAuthenticator`
-   validates issuer, signature and audience, and maps the person to their
-   Synaplan account (creating it on first use, like any SSO login).
-
-Why the silent page is on the Jitsi origin and not on Synaplan: Synaplan's
-Caddy sets `X-Frame-Options: SAMEORIGIN` on every response, so a Synaplan
-page cannot complete inside an iframe on `meet.<domain>`. One extra static
-file next to the loader include is a smaller change than a framing exception
-in Synaplan. `MN-0` verifies the flow in Chromium, Firefox and Safari.
-
-## 7. Failure handling
-
-| What fails | When | What the person sees | What happens |
-|------------|------|----------------------|--------------|
-| Plugin off or Synaplan down | page load | No button. | Loader: one `config` call, fails or `enabled:false`, exits. |
-| Keycloak silent sign-in | dialog open | "Sign in to continue" with a button (popup). | — |
-| Prosody unreachable / module missing | Start | "Meeting notes could not start. Nothing is being written down. Try again in a minute or ask your administrator." | Session `failed` (`jitsi_unreachable`), audit. |
-| Transcriber never connects (30 s) | after Start | The starter sees the same sentence. Others saw "Meeting notes are starting…" for at most 30 s, then the chat line "Meeting notes could not start. Nothing was written down." | Plugin calls Prosody `stop`; session `failed` (`transcriber_unreachable`). |
-| Speech engine down mid-meeting | running | Banner: "Meeting notes are paused: speech recognition is not available. The meeting continues." | Windows answered 503; plugin records gap `[t0,t1]`; state `paused`; resumes on first success; file says "No notes from 10:14 to 10:17: speech recognition was not available." |
-| Transcriber crashes mid-meeting | running | Banner unchanged for ≤ 30 s, then paused text. | Bridge reconnects the WebSocket (Exporter reconnect); the transcriber binds again via `ref`; gap recorded for the missing time. |
-| Synaplan down mid-meeting | running | Captions stop; banner state from metadata still "on". | Transcriber retries windows for 60 s, then marks them lost and keeps going; on `session-end` it retries `finished` for 10 min. Watchdog finalizes when Synaplan is back. |
-| File write fails | finalize | Personal page and toast: "Your notes could not be saved to Files. The text is kept here for 7 days. Try again." with **Save again**. | Session `failed` with segments kept; retry button reruns finalize. |
-| Two people press Start | Start | Second: "Meeting notes are already on in this meeting, started by Anna." | Room lock row; Prosody `already_transcribing`. |
-
-Copy in all five locales lives in the plugin i18n files and the loader bundle
-([04 §3](./04_jitsi_and_opendesk.md#3-copy-en--de)).
-
-## 8. Security and privacy
-
-| Threat | Treatment |
-|--------|-----------|
-| Covert notes | Prosody posts a chat line on start and stop to everyone, sets metadata that every loader turns into a banner, and Jitsi shows its own indicator to every client including mobile apps. The plugin cannot start without Prosody doing all three. |
-| Starting notes in a meeting you are not in | Prosody checks that `startedBy.userSub` is the token identity of a current occupant and that `meetingId` is the live one. |
-| Forged roster / events | HMAC-SHA256 over `timestamp + method + path + sha256(body)`, ±60 s window, nonce cache 5 min. |
-| Audio injection into someone's notes | Audio only via `/public/transcriber/…` with the transcriber token **and** a live `ref`; `ref` is unguessable and bound to the meeting id; windows for terminal sessions are refused. |
-| Audio retention | Transcriber keeps ≤ 30 s per speaker in memory; plugin writes a temp file per window and deletes it in `finally`; no audio in logs, metrics or exceptions. Tested ([07 MN-5/MN-3](./07_sprints.md)). |
-| Prompt injection via speech | Transcript is user data; nothing executes it. Summaries (later) are a separate, approvable Saved Task. |
-| Cloud speech on a sovereign install | Plugin setting `allow_cloud_stt` default **off**; the model picker then lists only self-hosted models; Start refuses with "No speech model on your organisation's servers is set up." |
-| Admin reads others' meetings | Admin list shows metadata only; files belong to their owners (core rule: admins do not see others' files unless shared). |
-| Loader script compromise | Served by Synaplan from the plugin directory (read-only mount), same site as Jitsi; versioned; renders text only (no `innerHTML` with server strings) inside a Shadow DOM. |
-| E2EE meetings | Loader detects `features/e2ee.enabled` and offers no Start; Prosody refuses `start` if the room has E2EE flagged. |
-
-Legal note for the admin docs (not legal advice): employee meetings may need
-a works-council or staff-council agreement and a data-protection impact
-assessment; the visible banner, chat notice and stop are the technical
-baseline, v1.1 adds per-person opt-out.
-
-## 9. Capacity (starting numbers, measured in `MN-8`)
-
-| Item | Per active speaker | Notes |
-|------|--------------------|-------|
-| Bridge → transcriber | ~30 kbit/s Opus | measured in the spike |
-| Transcriber CPU | Opus decode + voice detection, < 2 % of a core | WASM decoder |
-| Synaplan requests | 1 per 5–12 s of speech | one PHP request per window |
-| GPU (Whisper large-v3-turbo, f16, whisper-server) | **0.17 s per 12.5 s utterance, ~72× real time, 2.5 GB VRAM** (measured on an RTX PRO 6000 Blackwell, 2026-10-04) | one server process ≈ 50+ meetings with one active speaker each; concurrency measured in `MN-8c` |
-| CPU (whisper.cpp large-v3-turbo q5, 8 threads) | ~6–10 s per 10 s window (estimate) | dev only |
-
-## 10. Observability
-
-Transcriber `/metrics` (Prometheus): `mn_sessions_active`,
-`mn_windows_total{result}`, `mn_window_seconds` (histogram of audio length),
-`mn_stt_latency_seconds`, `mn_gap_seconds_total`, `mn_bridge_reconnects_total`.
-Plugin: audit events + a `GET admin/status` that reads the transcriber's
-`/health`. Logs carry session id, endpoint id, sequence, timings — never text
-or audio.
+1. **Fix the installer (blocking).** `defaults.yaml` pins synaplan-charts
+   `a14fa65`, which a force-push removed; fresh installs fail. Pin a commit
+   that exists, then follow the new layout of synaplan-charts#53. Until then:
+   clone synaplan-charts, `git fetch origin a14fa65db007fd79d136d34f7457460e42553ae6 && git checkout FETCH_HEAD`,
+   and set `SYNAPLAN_CHARTS_PATH` to that checkout. *synaScriber, synaplan-charts*
+2. **Publish a transcriber image.** Stop downloading source code at pod
+   start. *synaplan*
+3. **Give the transcriber its own key.** Replace the owner's full-access API
+   key with a limited token; this needs public plugin routes in Synaplan.
+   *synaplan, synaScriber*
+4. **Secure the Prosody calls.** Sign the requests (HMAC) and store the
+   secret encrypted. *synaScriber*
+5. **Check who starts.** Only people in the meeting may start notes; post a
+   chat line on start and stop. *synaScriber*
+6. **Test CPU and GPU speech-to-text** with the published `synaplan-stt`
+   image. *synaScriber*
+7. **Finish the session handling.** Switching the plugin off stops running
+   notes; add a retention period for session records. *synaScriber*
+8. **Add tests and tidy up.** Unit tests for the plugin routes and the
+   Prosody module; update the route list in `manifest.json`. *synaScriber*
