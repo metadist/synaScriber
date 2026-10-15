@@ -1,5 +1,7 @@
 # 04 — Jitsi and openDesk side
 
+**Status:** plan of 2026-10-04. What runs today: [02](./02_architecture.md).
+
 What changes inside openDesk, and what people see in a meeting. Nothing
 here forks Jitsi or edits openDesk's own files: we add one script include,
 one static page, a `config.js` block, one Prosody module, one Jicofo block

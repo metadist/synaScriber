@@ -12,7 +12,7 @@ longer in synaplan-charts. The `stt` chart is on synaplan-charts `main` with
 ([#64](https://github.com/metadist/synaplan-charts/pull/64)). Synaplan
 `main` still has no server mode (`MN-8a`): `speech.whisperServerUrl` has no
 effect, and meeting notes reach the server through the plugin's own
-`stt_url` ([09](./09_as_built.md) §7). Not yet installed on a GPU cluster.
+`stt_url` ([02](./02_architecture.md)). Not yet installed on a GPU cluster.
 Step `MN-8a2` in
 [07](./07_sprints.md#mn-8--engine-and-quality-beside-mn-3mn-7-gates-mn-9).
 

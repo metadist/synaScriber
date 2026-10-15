@@ -1,10 +1,9 @@
 # synaScriber — plan and research (start here)
 
-**Status:** Plan, 2026-10-04. Since then a dev MVP and the openDesk
-installer exist (see [`STATUS.md`](./STATUS.md)); what runs today, and where
-it differs from this plan, is in [`09_as_built.md`](./09_as_built.md).
-Review this folder, tick the decisions in §4, then continue with the steps
-in [`07_sprints.md`](./07_sprints.md).
+**Status:** Plan, 2026-10-04. A dev MVP and the openDesk installer exist
+(see [`STATUS.md`](./STATUS.md)). **What runs today, what it needs and the
+ToDo: [`02_architecture.md`](./02_architecture.md).** The other files are the
+plan and research; where they differ, 02 is right.
 **Owner:** product owner.
 **MVP:** Jitsi on the current openDesk edition release, with a floating
 **Meeting notes** button. Element (chat and calls) follows after v1.x.
@@ -45,14 +44,13 @@ OpenCloud is v1.2.
 |---|------|----------------|
 | 00 | [`00_master_plan.md`](./00_master_plan.md) | Goal, scope per version, architecture overview, journeys, UX bar, repos, release classes. |
 | 01 | [`01_findings.md`](./01_findings.md) | Verified facts (2026-10-04): what Jitsi on openDesk can do today, what Synaplan has, the spike results, the gaps. |
-| 02 | [`02_architecture.md`](./02_architecture.md) | Components, session state machine, every API between them, data model, security and failure handling. |
+| 02 | [`02_architecture.md`](./02_architecture.md) | **Current.** Repositories and packages, what you need to run it, how a meeting works, interfaces, what is stored where, ToDo. |
 | 03 | [`03_plugin.md`](./03_plugin.md) | The plugin itself: repo layout, `manifest.json`, settings, routes, classes, admin and user pages, i18n. |
 | 04 | [`04_jitsi_and_opendesk.md`](./04_jitsi_and_opendesk.md) | The Jitsi button and dialog, the Prosody module, Jicofo and `config.js`, Keycloak client, openDesk packaging. |
 | 05 | [`05_stt_quality.md`](./05_stt_quality.md) | How the audio becomes good text: windowing, voice detection, prompts, filters, engines, benchmark, where each setting lives. |
 | 06 | [`06_dev_environment.md`](./06_dev_environment.md) | How to develop against an openDesk dev cluster without touching the openDesk edition repo. |
 | 07 | [`07_sprints.md`](./07_sprints.md) | The steps `MN-0` … `MN-12`, each with files, tests and an exit. |
 | 08 | [`08_stt_service.md`](./08_stt_service.md) | The German Whisper server for Kubernetes with GPU nodes: image, `stt` chart, helmfile release, which versions must move, measured sizing, release order. |
-| 09 | [`09_as_built.md`](./09_as_built.md) | What runs today: pods, images, the JavaScript, what is stored where, the flow of one meeting, and where the code differs from 02. |
 | — | [`STATUS.md`](./STATUS.md) | Step log. The spike entry of 2026-10-04 is the first row. |
 
 Private cluster specifics (IP addresses, hostnames, ports, firewall rules,
@@ -83,10 +81,10 @@ recommendation.
 | # | Decision | Proposed | Where | Agree? |
 |---|----------|----------|-------|--------|
 | D1 | How audio leaves the meeting | **Jitsi's own bridge transcription** (bridge → WebSocket → transcriber). Verified working on openDesk's Jitsi `stable-11031`. Not browser capture, not a bot participant, not Jibri, not Jigasi. | [00 §4](./00_master_plan.md#4-architecture-decision), [01 §2](./01_findings.md#2-jitsi-on-opendesk-verified) | |
-| D2 | Who may start and stop | **Synaplan decides**; a Prosody module turns transcription on per room. A Jitsi moderator can always stop from Jitsi, even if Synaplan is down. Clients cannot start without Synaplan. | [02 §3](./02_architecture.md#3-start-and-stop-authority) | |
-| D3 | How the Jitsi button knows who you are | **Keycloak public client** `synascriber` with silent sign-in (PKCE), token audience `synaplan`. Not the Synaplan cookie, not an iframe, not the Jitsi token. | [02 §6](./02_architecture.md#6-identity-in-the-jitsi-page) | |
+| D2 | Who may start and stop | **Synaplan decides**; a Prosody module turns transcription on per room. A Jitsi moderator can always stop from Jitsi, even if Synaplan is down. Clients cannot start without Synaplan. | [plan 02 §3](https://github.com/metadist/synaScriber/blob/6babe67590475885bdb6a1e387c83e02ba9ff4a6/docs/02_architecture.md#3-start-and-stop-authority) | |
+| D3 | How the Jitsi button knows who you are | **Keycloak public client** `synascriber` with silent sign-in (PKCE), token audience `synaplan`. Not the Synaplan cookie, not an iframe, not the Jitsi token. | [plan 02 §6](https://github.com/metadist/synaScriber/blob/6babe67590475885bdb6a1e387c83e02ba9ff4a6/docs/02_architecture.md#6-identity-in-the-jitsi-page) | |
 | D4 | Packaging | **Plugin `synascriber`** in its own repo `metadist/synaScriber` (Synaform layout). The transcriber stays in `synaplan/sidecars/synaplan-transcriber` and gets a "plugin mode". | [00 §6](./00_master_plan.md#6-repositories-and-what-changes-where) | |
-| D5 | Where audio goes for speech-to-text | Transcriber → **plugin endpoint** → Synaplan's normal speech-to-text (`AiFacade::transcribe`) as the **person who started**. No API key in the transcriber; every audio window is checked against a live session. | [02 §5](./02_architecture.md#5-apis) | |
+| D5 | Where audio goes for speech-to-text | Transcriber → **plugin endpoint** → Synaplan's normal speech-to-text (`AiFacade::transcribe`) as the **person who started**. No API key in the transcriber; every audio window is checked against a live session. | [plan 02 §5](https://github.com/metadist/synaScriber/blob/6babe67590475885bdb6a1e387c83e02ba9ff4a6/docs/02_architecture.md#5-apis) | |
 | D6 | Where the transcript lands (v1.0) | **One Markdown copy for every signed-in participant** in their own Synaplan **Sources › Generated** (source `generated`, kind `document`), in the folder chosen in the dialog (default from the admin, e.g. "Meetings"), extracted and vectorized. Participants are matched by their Jitsi token (Keycloak `sub` + email); someone who never opened Synaplan gets their account created as at first sign-in. Guests get no copy. Admin switch **share with participants** (default on; off = only the starter). | [03 §8](./03_plugin.md#8-storage-the-transcript-file) | |
 | D7 | Speech engine for quality | **Synaplan's own Whisper, with a server mode**: a whisper.cpp `whisper-server` (model loaded once) on GPU — on our GPU host now, on openDesk clusters with GPU nodes as the `stt` chart from `synaplan-charts` (own helmfile release, image `synaplan-stt` with the German model q8_0 baked in). Stock and German (`primeline`) large-v3-turbo benchmarked; faster-whisper as the throughput alternative. Today's CLI path stays for small installs. Cloud only if the admin switches it on. | [05 §6](./05_stt_quality.md#6-engines), [08](./08_stt_service.md) | |
 | D8 | Consent model in v1.0 | **Transparency + one-click stop**: banner for everyone who has the loader, Jitsi's own "transcribing" indicator for everyone, one chat line on start and stop. Per-person "leave my voice out" is v1.1. | [00 §7](./00_master_plan.md#7-ux-bar-mapped-to-this-feature) | |

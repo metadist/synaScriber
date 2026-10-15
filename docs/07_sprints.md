@@ -95,7 +95,7 @@ lines, PHPUnit + PHPStan green.
 ## MN-3 — Sessions in the plugin
 
 - `SessionRepository`, `SegmentRepository` (prefix queries with
-  `bindValue`), `SessionService` state machine ([02 §2](./02_architecture.md#2-session-state-machine)),
+  `bindValue`), `SessionService` state machine ([02 §2](https://github.com/metadist/synaScriber/blob/6babe67590475885bdb6a1e387c83e02ba9ff4a6/docs/02_architecture.md#2-session-state-machine)),
   `StartPolicy` (v1.0), `ProsodyClient` + `HmacSigner` (against a stub),
   `SessionWatchdog`, `JitsiController` (`me`, `sessions` POST/GET/stop),
   `UserSessionController`, `TranscriberController` (`sessions/{ref}` GET,
@@ -140,7 +140,7 @@ Synaplan is refused; a moderator stop is accepted and calls back.
   `language` = session language.
 - Events `connected`, `speaker-start/stop`, `stt-failure`, `session-end`,
   `finished`.
-- `/metrics` ([02 §10](./02_architecture.md#10-observability)).
+- `/metrics` ([02 §10](https://github.com/metadist/synaScriber/blob/6babe67590475885bdb6a1e387c83e02ba9ff4a6/docs/02_architecture.md#10-observability)).
 - Env: `SYNAPLAN_URL`, `SYNASCRIBER_TOKEN`, `TRANSCRIBER_AUTH_TOKEN`
   (bridge header), optional `MN_PROFILE_*`.
 
@@ -187,7 +187,7 @@ Exit bullets:
 3. Consequence copy for Start, Stop (starter), Stop (moderator), Stop all,
    Turn off in five locales.
 4. Empty / error / flag-off: cannot-start reasons, every failure sentence of
-   [02 §7](./02_architecture.md#7-failure-handling), plugin off ⇒ no button
+   [02 §7](https://github.com/metadist/synaScriber/blob/6babe67590475885bdb6a1e387c83e02ba9ff4a6/docs/02_architecture.md#7-failure-handling), plugin off ⇒ no button
    and one config request only.
 5. Jitsi dark and light themes, 320 px, WCAG AA measured on the pill, dialog
    and banner; keyboard-only run.

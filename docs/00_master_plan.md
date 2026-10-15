@@ -1,7 +1,9 @@
 # 00 — Master plan: Meeting notes for Jitsi in openDesk
 
 **Status:** Plan 2026-10-04, decisions D1–D12 proposed in
-[`README.md`](./README.md) §4.
+[`README.md`](./README.md) §4. What runs today: [02](./02_architecture.md);
+"02" below means the
+[plan version](https://github.com/metadist/synaScriber/blob/6babe67590475885bdb6a1e387c83e02ba9ff4a6/docs/02_architecture.md).
 **Class:** new plugin repo (this one; `plugins/**` = backend-only in
 Synaplan's mobile-impact policy) + small core prerequisites in `synaplan`
 (backend-only, one ota-candidate label in Files) + sidecar change in
@@ -123,7 +125,7 @@ stays the fallback idea for E2EE meetings (later). C and D are not pursued.
     everyone who was present.
 
 Failure paths (transcriber down, speech model down, Synaplan down, everyone
-leaves, Jitsi stop) are in [02 §7](./02_architecture.md#7-failure-handling).
+leaves, Jitsi stop) are in [02 §7](https://github.com/metadist/synaScriber/blob/6babe67590475885bdb6a1e387c83e02ba9ff4a6/docs/02_architecture.md#7-failure-handling).
 
 ## 5. Components
 
