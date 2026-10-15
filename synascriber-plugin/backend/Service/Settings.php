@@ -23,6 +23,8 @@ final readonly class Settings
         'languages' => 'de,en',
         'default_folder' => 'Meetings',
         'stt_url' => '',
+        'stt_model' => 'whisper',
+        'stt_api_key' => '',
         'prosody_url' => '',
         'prosody_secret' => '',
         'owner_user_id' => '0',
@@ -31,7 +33,7 @@ final readonly class Settings
         'captions' => '1',
     ];
 
-    private const SECRET_KEYS = ['prosody_secret'];
+    private const SECRET_KEYS = ['prosody_secret', 'stt_api_key'];
 
     public function __construct(private ConfigRepository $config)
     {
@@ -119,6 +121,23 @@ final readonly class Settings
         return rtrim($this->get('stt_url'), '/');
     }
 
+    /**
+     * Sent as `model`: required by the OpenAI API (vLLM rejects requests
+     * without it); whisper.cpp's `whisper-server` ignores it.
+     */
+    public function sttModel(): string
+    {
+        return $this->get('stt_model');
+    }
+
+    /**
+     * Sent as a bearer token when set (e.g. `vllm serve --api-key`).
+     */
+    public function sttApiKey(): string
+    {
+        return $this->get('stt_api_key');
+    }
+
     public function prosodyUrl(): string
     {
         return rtrim($this->get('prosody_url'), '/');
@@ -174,6 +193,8 @@ final readonly class Settings
             'default_folder' => $this->sanitizeFolder((string) $value),
             'stt_url', 'prosody_url' => $this->url((string) $value, $key),
             'prosody_secret' => (string) $value,
+            'stt_model' => $this->model((string) $value),
+            'stt_api_key' => trim((string) $value),
             'owner_user_id' => (string) max(0, (int) $value),
             'timezone' => $this->zone((string) $value),
             default => throw new \InvalidArgumentException(sprintf('Unknown synascriber setting "%s".', $key)),
@@ -198,6 +219,16 @@ final readonly class Settings
         }
 
         return rtrim($value, '/');
+    }
+
+    private function model(string $value): string
+    {
+        $value = trim($value);
+        if ('' === $value || !preg_match('#^[\w.:/-]{1,200}$#', $value)) {
+            throw new \InvalidArgumentException('Setting "stt_model" must be a model name such as "whisper".');
+        }
+
+        return $value;
     }
 
     private function zone(string $value): string

@@ -11,9 +11,9 @@ use Symfony\Contracts\HttpClient\Exception\ExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 /**
- * Speech-to-text on a whisper.cpp `whisper-server` (OpenAI-compatible), with
- * the filters of docs/05 §5. Replaced by Synaplan's own Whisper provider once
- * Synaplan has its server mode (MN-8a).
+ * Speech-to-text on any server with the OpenAI transcription API (whisper.cpp
+ * `whisper-server`, vLLM), with the filters of docs/05 §5. Replaced by
+ * Synaplan's own Whisper provider once Synaplan has its server mode (MN-8a).
  */
 final readonly class WhisperClient
 {
@@ -62,6 +62,7 @@ final readonly class WhisperClient
 
         $fields = [
             'file' => new DataPart($audio, 'window.ogg', 'audio/ogg'),
+            'model' => $this->settings->sttModel(),
             'response_format' => 'verbose_json',
             'temperature' => '0',
         ];
@@ -73,7 +74,7 @@ final readonly class WhisperClient
         try {
             $response = $this->http->request('POST', $base.'/v1/audio/transcriptions', [
                 'timeout' => self::TIMEOUT_SECONDS,
-                'headers' => $form->getPreparedHeaders()->toArray(),
+                'headers' => [...$form->getPreparedHeaders()->toArray(), ...$this->authHeaders()],
                 'body' => $form->bodyToIterable(),
             ]);
             $body = $response->toArray(false);
@@ -96,10 +97,20 @@ final readonly class WhisperClient
             return false;
         }
         try {
-            return 200 === $this->http->request('GET', $base.'/health', ['timeout' => 5])->getStatusCode();
+            return 200 === $this->http->request('GET', $base.'/health', ['timeout' => 5, 'headers' => $this->authHeaders()])->getStatusCode();
         } catch (ExceptionInterface) {
             return false;
         }
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function authHeaders(): array
+    {
+        $key = $this->settings->sttApiKey();
+
+        return '' === $key ? [] : ['Authorization: Bearer '.$key];
     }
 
     /**
