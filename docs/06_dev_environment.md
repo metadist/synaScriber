@@ -1,5 +1,8 @@
 # 06 — Development environment
 
+**Status:** the overlay below is superseded by the installer in
+`deploy/opendesk/` ([02](./02_architecture.md)); the rules still apply.
+
 Development runs against a real openDesk dev cluster (no real data), because
 the bridge path cannot be faked convincingly in Docker Compose. The concrete
 cluster (hostnames, namespace, credentials, scripts) is described in

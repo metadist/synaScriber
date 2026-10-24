@@ -1,5 +1,9 @@
 # 03 — The plugin `synascriber`
 
+**Status:** plan of 2026-10-04. What runs today: [02](./02_architecture.md);
+"02" below means the
+[plan version](https://github.com/metadist/synaScriber/blob/6babe67590475885bdb6a1e387c83e02ba9ff4a6/docs/02_architecture.md).
+
 Reference implementation for layout and conventions: Synaform
 ([`metadist/Synaform`](https://github.com/metadist/Synaform), plugin directory `synaform-plugin/`).
 Everything below follows it unless it says otherwise.
