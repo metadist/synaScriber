@@ -1,4 +1,20 @@
-# synaScriber — the openDesk bridge for meeting transcripts
+# synaScriber: the openDesk bridge for meeting transcripts
+
+> **This repository is archived.** Meeting notes for Jitsi in openDesk now
+> live where the code runs:
+>
+> | What | Where |
+> |------|-------|
+> | The Synaplan plugin (backend, plugin page, the Jitsi loader) | [metadist/synaplan](https://github.com/metadist/synaplan), `plugins/synascriber`, bundled in the Synaplan image |
+> | The transcriber and `mod_synascriber.lua` for Jitsi's Prosody | [metadist/synaplan](https://github.com/metadist/synaplan), `sidecars/synaplan-transcriber`, image `ghcr.io/metadist/synaplan-transcriber` |
+> | The deployment (transcriber, Secrets, registration, Jitsi's values for openDesk) | [metadist/synaplan-charts](https://github.com/metadist/synaplan-charts), chart `synaplan` (`synascriber.*`) and `helmfile/opendesk` |
+> | The speech-to-text server | [metadist/synaplan-stt](https://github.com/metadist/synaplan-stt), chart `stt` in synaplan-charts |
+>
+> The installer under `deploy/opendesk` targets a layout of synaplan-charts
+> that no longer exists and does not work any more; the plugin here is 0.3.0
+> and needs the owner account that plugin 0.4.0 removed. The documents under
+> `docs/` are the planning history; what still holds is condensed in
+> `plugins/synascriber/ARCHITECTURE.md` in metadist/synaplan.
 
 **Setup and how it works:** [architecture.md](architecture.md).
 
